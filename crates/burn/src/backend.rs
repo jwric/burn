@@ -63,6 +63,9 @@ pub use burn_router as router;
 #[cfg(feature = "ir")]
 pub use burn_ir as ir;
 
+#[cfg(feature = "dylib")]
+pub use burn_dylib as dylib;
+
 #[cfg(feature = "collective")]
 pub use burn_collective as collective;
 #[cfg(feature = "cpu")]

@@ -97,6 +97,7 @@
 //!   - `candle`: Makes available the Candle backend
 //!   - `tch`: Makes available the LibTorch backend
 //!   - `ndarray`: Makes available the NdArray backend
+//!   - `dylib`: Makes available experimental runtime backend loading via shared libraries
 //! - Backend specifications
 //!   - `accelerate`: If supported, Accelerate will be used
 //!   - `blas-netlib`: If supported, Blas Netlib will be use

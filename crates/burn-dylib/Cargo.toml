@@ -1,0 +1,26 @@
+[package]
+authors = ["nathanielsimard <nathaniel.simard.42@gmail.com>"]
+categories = ["science"]
+description = "Dynamic backend plugin ABI and loader for Burn"
+documentation = "https://docs.rs/burn-dylib"
+edition.workspace = true
+keywords = ["deep-learning", "machine-learning", "plugin", "dylib"]
+license.workspace = true
+name = "burn-dylib"
+readme = "README.md"
+repository = "https://github.com/tracel-ai/burn/tree/main/crates/burn-dylib"
+version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["std"]
+std = ["dep:libloading"]
+
+[dependencies]
+libloading = { workspace = true, optional = true }
+
+[package.metadata.docs.rs]
+features = ["std"]
+rustdoc-args = ["--cfg", "docsrs"]
