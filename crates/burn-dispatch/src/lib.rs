@@ -56,6 +56,8 @@ mod macros;
 
 #[cfg(feature = "dylib")]
 mod dynamic;
+#[cfg(feature = "plugin")]
+pub mod plugin;
 
 mod backend;
 mod device;
@@ -67,6 +69,12 @@ pub use device::*;
 pub use tensor::*;
 
 extern crate alloc;
+
+#[cfg(feature = "plugin")]
+/// Re-exported so `export_dispatch_plugin_v1!` can invoke the ABI export macros
+/// without requiring downstream `cdylib` crates to depend on `burn-dylib`
+/// directly.
+pub use burn_dylib;
 
 /// Backends and devices used.
 pub(crate) mod backends {

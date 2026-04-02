@@ -12,6 +12,6 @@ default = []
 variant-b = []
 
 [dependencies]
-burn-dylib = { path = "../../../../burn-dylib", default-features = false }
+burn-dylib = { path = "../../../../burn-dylib", default-features = false, features = ["std"] }
 
 [workspace]

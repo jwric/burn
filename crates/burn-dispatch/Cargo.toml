@@ -29,6 +29,7 @@ default = [
     "burn-tch?/default",
     "burn-wgpu?/default",
     "dylib",
+    "plugin",
 ]
 doc = ["default"]
 std = [
@@ -70,6 +71,7 @@ wgpu = ["burn-wgpu"]
 cpu = ["burn-cpu"]
 autodiff = ["burn-autodiff"]
 dylib = ["std", "burn-dylib"]
+plugin = ["std", "burn-dylib"]
 
 # Backend features
 autotune = [

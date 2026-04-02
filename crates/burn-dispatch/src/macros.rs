@@ -35,6 +35,16 @@ macro_rules! backend_matrix {
     };
 }
 
+/// Utility to pick a token based on mode.
+macro_rules! if_mode {
+    (ref, $if_ref:expr, $if_owned:expr) => {
+        $if_ref
+    };
+    (owned, $if_ref:expr, $if_owned:expr) => {
+        $if_owned
+    };
+}
+
 /// Helper to map the runtime strategy to the compile-time Autodiff generic.
 #[allow(unused_macros)]
 macro_rules! with_autodiff_backend {
@@ -571,17 +581,6 @@ macro_rules! unary_float_arms {
 
 }
 
-#[cfg(feature = "autodiff")]
-/// Utility to pick a token based on mode
-macro_rules! if_mode {
-    (ref, $if_ref:expr, $if_owned:expr) => {
-        $if_ref
-    };
-    (owned, $if_ref:expr, $if_owned:expr) => {
-        $if_owned
-    };
-}
-
 /// Backend dispatch for float unary operations (that might support autodiff).
 ///
 /// When the return `=> Kind` is not provided, the operation output is not wrapped in a dispatch tensor (e.g., `into_data(..)`)
@@ -1046,11 +1045,11 @@ macro_rules! multi_op_arms {
         $( [$Backend:ident, $cfg:meta] ),*
     ) => {{
         let first_input = &first_input!($inputs);
-        let checkpointing = if cfg!(feature = "autodiff") {
-            first_input.checkpointing
-        } else {
-            $crate::CheckpointingStrategy::None
-        };
+        #[cfg(feature = "autodiff")]
+        let checkpointing = first_input.checkpointing;
+        #[cfg(not(feature = "autodiff"))]
+        let checkpointing = ();
+        let _ = &checkpointing;
 
         match first_input.kind {
             $(

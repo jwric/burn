@@ -1,5 +1,3 @@
-use alloc::boxed::Box;
-
 use burn_backend::{
     Backend, DType, QTensorPrimitive, Shape, TensorMetadata, quantization::QuantScheme,
 };

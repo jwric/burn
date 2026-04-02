@@ -217,7 +217,7 @@ impl PartialEq for DispatchDevice {
 
 /// Base multiplier to avoid type_id clashes between backends.
 /// Limits the number of device types per backend, but this is a sensible limit.
-const TYPE_ID_BASE: u16 = 10;
+pub(crate) const TYPE_ID_BASE: u16 = 10;
 
 impl DispatchDevice {
     #[cfg(feature = "autodiff")]

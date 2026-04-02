@@ -1,0 +1,16 @@
+[package]
+name = "burn-dispatch-plugin-fixture"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+with-dylib = ["burn-dispatch/dylib"]
+
+[dependencies]
+burn-dispatch = { path = "../../../../burn-dispatch", default-features = false, features = ["std", "plugin", "ndarray"] }
+
+[workspace]

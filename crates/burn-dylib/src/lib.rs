@@ -17,6 +17,12 @@
 
 use core::ffi::c_char;
 
+/// Trait-backed helpers for implementing backend plugins without hand-writing
+/// the whole C ABI shim.
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod adapter;
+
 /// Symbol name that backend plugins must export.
 pub const BACKEND_PLUGIN_SYMBOL: &[u8] = b"burn_backend_plugin_v1\0";
 
@@ -419,6 +425,83 @@ macro_rules! export_backend_tensor_ops_v1 {
         pub unsafe extern "C" fn burn_backend_tensor_ops_v1() -> *const $crate::BackendTensorOpsV1 {
             core::ptr::addr_of!($ops)
         }
+    };
+}
+
+/// Export a trait-backed plugin implementation.
+///
+/// The plugin type must implement [`adapter::FloatTensorPlugin`].
+///
+/// # Example
+///
+/// ```ignore
+/// struct MyPlugin;
+///
+/// impl burn_dylib::adapter::PluginMetadata for MyPlugin {
+///     type Device = ();
+///
+///     fn backend_name() -> &'static [u8] {
+///         b"my-backend\0"
+///     }
+///
+///     fn device_count(_type_id: u16) -> usize {
+///         1
+///     }
+///
+///     fn create_device(
+///         _type_id: u16,
+///         _ordinal: usize,
+///     ) -> burn_dylib::adapter::PluginResult<Self::Device> {
+///         Ok(())
+///     }
+/// }
+///
+/// impl burn_dylib::adapter::FloatTensorPlugin for MyPlugin {
+///     type FloatTensor = ();
+///
+///     fn tensor_from_f32_data(
+///         _device: &Self::Device,
+///         _shape: &[usize],
+///         _data: &[f32],
+///     ) -> burn_dylib::adapter::PluginResult<Self::FloatTensor> {
+///         Ok(())
+///     }
+///
+///     fn tensor_into_f32_data(
+///         _tensor: &Self::FloatTensor,
+///     ) -> burn_dylib::adapter::PluginResult<Vec<f32>> {
+///         Ok(Vec::new())
+///     }
+///
+///     fn tensor_shape(
+///         _tensor: &Self::FloatTensor,
+///     ) -> burn_dylib::adapter::PluginResult<Vec<usize>> {
+///         Ok(Vec::new())
+///     }
+///
+///     fn tensor_binary(
+///         _op: burn_dylib::TensorBinaryOp,
+///         _device: &Self::Device,
+///         _lhs: &Self::FloatTensor,
+///         _rhs: &Self::FloatTensor,
+///     ) -> burn_dylib::adapter::PluginResult<Self::FloatTensor> {
+///         Ok(())
+///     }
+/// }
+///
+/// burn_dylib::export_plugin_api!(MyPlugin);
+/// ```
+#[cfg(feature = "std")]
+#[macro_export]
+macro_rules! export_plugin_api {
+    ($plugin:path) => {
+        static BURN_DYLIB_PLUGIN_V1: $crate::BackendPluginV1 =
+            $crate::adapter::backend_plugin_v1::<$plugin>();
+        static BURN_DYLIB_TENSOR_OPS_V1: $crate::BackendTensorOpsV1 =
+            $crate::adapter::backend_tensor_ops_v1::<$plugin>();
+
+        $crate::export_backend_plugin_v1!(BURN_DYLIB_PLUGIN_V1);
+        $crate::export_backend_tensor_ops_v1!(BURN_DYLIB_TENSOR_OPS_V1);
     };
 }
 

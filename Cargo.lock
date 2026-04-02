@@ -958,6 +958,7 @@ dependencies = [
  "burn-backend",
  "burn-cpu",
  "burn-cuda",
+ "burn-dylib",
  "burn-ndarray",
  "burn-rocm",
  "burn-tch",
@@ -2265,8 +2266,6 @@ dependencies = [
 [[package]]
 name = "cubecl-hip-sys"
 version = "7.1.5280200"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcdd98f72d6f17836a0477bcd5ae5dd6b57a80fb62a3c0919f867a231f897f28"
 dependencies = [
  "libc",
  "regex",
