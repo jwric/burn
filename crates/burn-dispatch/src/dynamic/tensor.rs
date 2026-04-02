@@ -16,9 +16,7 @@ struct DylibTensorDropGuard {
 
 impl Drop for DylibTensorDropGuard {
     fn drop(&mut self) {
-        if let Ok(runtime) = runtime::get_runtime(self.runtime_id) {
-            let _ = runtime.plugin.release_tensor(self.handle);
-        }
+        runtime::release_tensor(self.runtime_id, self.handle);
     }
 }
 

@@ -1,12 +1,12 @@
 #![cfg(feature = "dylib")]
 
 use burn_backend::{DType, DTypeUsage, DTypeUsageSet, ExecutionError, Shape, TensorData};
-use burn_dylib::TensorBinaryOp;
 use burn_dylib::loader::{LoadError, LoadedBackendPlugin, PluginCallError};
+use burn_dylib::{DeviceHandle, TensorBinaryOp, TensorHandle};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
 
 use super::device::DylibDevice;
@@ -44,10 +44,116 @@ impl Display for DylibError {
 
 impl std::error::Error for DylibError {}
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DeviceSnapshot {
+    pub(crate) runtime_id: u64,
+    pub(crate) backend_type_id: u16,
+    pub(crate) ordinal: u32,
+    pub(crate) handle: DeviceHandle,
+}
+
+#[derive(Debug)]
+struct DeviceEntry {
+    snapshot: DeviceSnapshot,
+    refs: AtomicUsize,
+}
+
+impl DeviceEntry {
+    fn new(snapshot: DeviceSnapshot) -> Self {
+        Self {
+            snapshot,
+            refs: AtomicUsize::new(1),
+        }
+    }
+
+    fn snapshot(&self) -> DeviceSnapshot {
+        self.snapshot
+    }
+
+    fn retain(&self) {
+        self.refs.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn release(&self) -> bool {
+        self.refs.fetch_sub(1, Ordering::AcqRel) == 1
+    }
+}
+
 pub(crate) struct DylibRuntime {
-    pub(crate) id: u64,
-    pub(crate) path: String,
-    pub(crate) plugin: Arc<LoadedBackendPlugin>,
+    id: u64,
+    path: String,
+    plugin: Arc<LoadedBackendPlugin>,
+}
+
+impl DylibRuntime {
+    fn name(&self) -> Result<String, DylibError> {
+        self.plugin.name().map_err(map_call_error)
+    }
+
+    fn seed(&self, seed: u64) -> Result<(), DylibError> {
+        self.plugin.seed(seed).map_err(map_call_error)
+    }
+
+    fn sync(&self) -> Result<(), DylibError> {
+        self.plugin.sync().map_err(map_call_error)
+    }
+
+    fn device_count(&self, backend_type_id: u16) -> usize {
+        self.plugin.device_count(backend_type_id)
+    }
+
+    fn create_device_handle(
+        &self,
+        backend_type_id: u16,
+        ordinal: usize,
+    ) -> Result<DeviceHandle, DylibError> {
+        self.plugin
+            .create_device(backend_type_id, ordinal)
+            .map_err(map_call_error)
+    }
+
+    fn tensor_from_f32_data(
+        &self,
+        device: DeviceHandle,
+        shape: &Shape,
+        values: &[f32],
+    ) -> Result<TensorHandle, DylibError> {
+        self.plugin
+            .tensor_from_f32_data(device, shape.as_slice(), values)
+            .map_err(map_call_error)
+    }
+
+    fn tensor_into_f32_data(&self, tensor: TensorHandle) -> Result<Vec<f32>, DylibError> {
+        self.plugin
+            .tensor_into_f32_data(tensor)
+            .map_err(map_call_error)
+    }
+
+    fn tensor_binary(
+        &self,
+        op: TensorBinaryOp,
+        lhs: TensorHandle,
+        rhs: TensorHandle,
+    ) -> Result<TensorHandle, DylibError> {
+        self.plugin
+            .tensor_binary(op, lhs, rhs)
+            .map_err(map_call_error)
+    }
+
+    fn tensor_shape_or(&self, tensor: TensorHandle, fallback: Shape) -> Shape {
+        self.plugin
+            .tensor_shape(tensor)
+            .map(|dims| Shape::new_raw(dims.into()))
+            .unwrap_or(fallback)
+    }
+
+    fn release_device(&self, device: DeviceHandle) {
+        let _ = self.plugin.release_device(device);
+    }
+
+    fn release_tensor(&self, tensor: TensorHandle) {
+        let _ = self.plugin.release_tensor(tensor);
+    }
 }
 
 impl core::fmt::Debug for DylibRuntime {
@@ -59,17 +165,108 @@ impl core::fmt::Debug for DylibRuntime {
     }
 }
 
-static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
-static NEXT_DEVICE_INDEX: AtomicU32 = AtomicU32::new(1);
+#[derive(Debug)]
+struct RuntimeRegistry {
+    next_runtime_id: AtomicU64,
+    next_device_index: AtomicU32,
+    runtimes: RwLock<HashMap<u64, Arc<DylibRuntime>>>,
+    runtimes_by_path: RwLock<HashMap<String, u64>>,
+    devices: RwLock<HashMap<u32, Arc<DeviceEntry>>>,
+}
 
-static RUNTIMES: LazyLock<RwLock<HashMap<u64, Arc<DylibRuntime>>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+impl RuntimeRegistry {
+    fn new() -> Self {
+        Self {
+            next_runtime_id: AtomicU64::new(1),
+            next_device_index: AtomicU32::new(1),
+            runtimes: RwLock::new(HashMap::new()),
+            runtimes_by_path: RwLock::new(HashMap::new()),
+            devices: RwLock::new(HashMap::new()),
+        }
+    }
 
-static RUNTIMES_BY_PATH: LazyLock<RwLock<HashMap<String, u64>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+    fn get_runtime(&self, runtime_id: u64) -> Result<Arc<DylibRuntime>, DylibError> {
+        self.runtimes
+            .read()
+            .unwrap()
+            .get(&runtime_id)
+            .cloned()
+            .ok_or(DylibError::RuntimeNotFound(runtime_id))
+    }
 
-static DEVICES: LazyLock<RwLock<HashMap<u32, DylibDevice>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
+    fn register_runtime(&self, path: impl AsRef<Path>) -> Result<u64, DylibError> {
+        let key = normalize_path(path.as_ref());
+
+        if let Some(id) = self.runtimes_by_path.read().unwrap().get(&key).copied() {
+            return Ok(id);
+        }
+
+        let mut path_map = self.runtimes_by_path.write().unwrap();
+        if let Some(id) = path_map.get(&key).copied() {
+            return Ok(id);
+        }
+
+        let plugin = unsafe { LoadedBackendPlugin::load(path.as_ref()) }.map_err(map_load_error)?;
+        let id = self.next_runtime_id.fetch_add(1, Ordering::Relaxed);
+
+        let runtime = Arc::new(DylibRuntime {
+            id,
+            path: key.clone(),
+            plugin: Arc::new(plugin),
+        });
+
+        self.runtimes.write().unwrap().insert(id, runtime);
+        path_map.insert(key, id);
+
+        Ok(id)
+    }
+
+    fn insert_device(&self, snapshot: DeviceSnapshot) -> u32 {
+        let registry_index = self.next_device_index.fetch_add(1, Ordering::Relaxed);
+        self.devices
+            .write()
+            .unwrap()
+            .insert(registry_index, Arc::new(DeviceEntry::new(snapshot)));
+        registry_index
+    }
+
+    fn device_entry(&self, registry_index: u32) -> Result<Arc<DeviceEntry>, DylibError> {
+        self.devices
+            .read()
+            .unwrap()
+            .get(&registry_index)
+            .cloned()
+            .ok_or(DylibError::DeviceNotFound(registry_index))
+    }
+
+    fn device_snapshot(&self, registry_index: u32) -> Result<DeviceSnapshot, DylibError> {
+        Ok(self.device_entry(registry_index)?.snapshot())
+    }
+
+    fn retain_device(&self, registry_index: u32) -> Result<(), DylibError> {
+        self.device_entry(registry_index)?.retain();
+        Ok(())
+    }
+
+    fn release_device(&self, registry_index: u32) {
+        let entry = match self.devices.read().unwrap().get(&registry_index).cloned() {
+            Some(entry) => entry,
+            None => return,
+        };
+
+        if !entry.release() {
+            return;
+        }
+
+        self.devices.write().unwrap().remove(&registry_index);
+
+        if let Ok(runtime) = self.get_runtime(entry.snapshot.runtime_id) {
+            runtime.release_device(entry.snapshot.handle);
+        }
+    }
+}
+
+static REGISTRY: LazyLock<RuntimeRegistry> = LazyLock::new(RuntimeRegistry::new);
 
 fn normalize_path(path: &Path) -> String {
     std::fs::canonicalize(path)
@@ -86,6 +283,12 @@ fn map_call_error(err: PluginCallError) -> DylibError {
     DylibError::Plugin(err.to_string())
 }
 
+fn lookup_device(device: &DylibDevice) -> Result<(Arc<DylibRuntime>, DeviceSnapshot), DylibError> {
+    let snapshot = REGISTRY.device_snapshot(device.registry_index)?;
+    let runtime = REGISTRY.get_runtime(snapshot.runtime_id)?;
+    Ok((runtime, snapshot))
+}
+
 pub(crate) fn to_execution_error(err: DylibError) -> ExecutionError {
     ExecutionError::WithContext {
         reason: format!("dylib dispatch error: {err}"),
@@ -93,39 +296,29 @@ pub(crate) fn to_execution_error(err: DylibError) -> ExecutionError {
 }
 
 pub(crate) fn get_runtime(runtime_id: u64) -> Result<Arc<DylibRuntime>, DylibError> {
-    RUNTIMES
-        .read()
-        .unwrap()
-        .get(&runtime_id)
-        .cloned()
-        .ok_or(DylibError::RuntimeNotFound(runtime_id))
+    REGISTRY.get_runtime(runtime_id)
 }
 
 pub(crate) fn register_runtime(path: impl AsRef<Path>) -> Result<u64, DylibError> {
-    let key = normalize_path(path.as_ref());
+    REGISTRY.register_runtime(path)
+}
 
-    if let Some(id) = RUNTIMES_BY_PATH.read().unwrap().get(&key).copied() {
-        return Ok(id);
+pub(crate) fn device_snapshot(registry_index: u32) -> Result<DeviceSnapshot, DylibError> {
+    REGISTRY.device_snapshot(registry_index)
+}
+
+pub(crate) fn retain_device(registry_index: u32) -> Result<(), DylibError> {
+    REGISTRY.retain_device(registry_index)
+}
+
+pub(crate) fn release_device(registry_index: u32) {
+    REGISTRY.release_device(registry_index);
+}
+
+pub(crate) fn release_tensor(runtime_id: u64, handle: TensorHandle) {
+    if let Ok(runtime) = get_runtime(runtime_id) {
+        runtime.release_tensor(handle);
     }
-
-    let mut path_map = RUNTIMES_BY_PATH.write().unwrap();
-    if let Some(id) = path_map.get(&key).copied() {
-        return Ok(id);
-    }
-
-    let plugin = unsafe { LoadedBackendPlugin::load(path.as_ref()) }.map_err(map_load_error)?;
-    let id = NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed);
-
-    let runtime = Arc::new(DylibRuntime {
-        id,
-        path: key.clone(),
-        plugin: Arc::new(plugin),
-    });
-
-    RUNTIMES.write().unwrap().insert(id, runtime);
-    path_map.insert(key, id);
-
-    Ok(id)
 }
 
 pub(crate) fn create_device_from_runtime(
@@ -137,26 +330,22 @@ pub(crate) fn create_device_from_runtime(
         .map_err(|_| DylibError::InvalidInput(format!("Invalid device ordinal: {ordinal}")))?;
 
     let runtime = get_runtime(runtime_id)?;
-    let handle = runtime
-        .plugin
-        .create_device(backend_type_id, ordinal)
-        .map_err(map_call_error)?;
+    let available = runtime.device_count(backend_type_id);
+    if available != 0 && ordinal >= available {
+        return Err(DylibError::InvalidInput(format!(
+            "Invalid device ordinal {ordinal} for backend type {backend_type_id}"
+        )));
+    }
 
-    let registry_index = NEXT_DEVICE_INDEX.fetch_add(1, Ordering::Relaxed);
-    let device = DylibDevice {
-        registry_index,
+    let handle = runtime.create_device_handle(backend_type_id, ordinal)?;
+    let registry_index = REGISTRY.insert_device(DeviceSnapshot {
         runtime_id,
         backend_type_id,
         ordinal: ordinal_u32,
         handle,
-    };
+    });
 
-    DEVICES
-        .write()
-        .unwrap()
-        .insert(device.registry_index, device.clone());
-
-    Ok(device)
+    Ok(DylibDevice::from_registry_index(registry_index))
 }
 
 pub(crate) fn create_device_from_path(
@@ -169,35 +358,24 @@ pub(crate) fn create_device_from_path(
 }
 
 pub(crate) fn device_from_registry(index_id: u32) -> Result<DylibDevice, DylibError> {
-    DEVICES
-        .read()
-        .unwrap()
-        .get(&index_id)
-        .cloned()
-        .ok_or(DylibError::DeviceNotFound(index_id))
+    retain_device(index_id)?;
+    Ok(DylibDevice::from_registry_index(index_id))
 }
 
 pub(crate) fn backend_name(device: &DylibDevice) -> String {
-    match get_runtime(device.runtime_id)
-        .and_then(|runtime| runtime.plugin.name().map_err(map_call_error))
-    {
+    match lookup_device(device).and_then(|(runtime, _)| runtime.name()) {
         Ok(name) => format!("dylib<{name}>"),
         Err(err) => format!("dylib<error:{err}>"),
     }
 }
 
 pub(crate) fn backend_seed(device: &DylibDevice, seed: u64) {
-    let _ = get_runtime(device.runtime_id)
-        .and_then(|runtime| runtime.plugin.seed(seed).map_err(map_call_error));
+    let _ = lookup_device(device).and_then(|(runtime, _)| runtime.seed(seed));
 }
 
 pub(crate) fn backend_sync(device: &DylibDevice) -> Result<(), ExecutionError> {
-    let runtime = get_runtime(device.runtime_id).map_err(to_execution_error)?;
-    runtime
-        .plugin
-        .sync()
-        .map_err(map_call_error)
-        .map_err(to_execution_error)
+    let (runtime, _) = lookup_device(device).map_err(to_execution_error)?;
+    runtime.sync().map_err(to_execution_error)
 }
 
 pub(crate) fn dtype_usage(dtype: DType) -> DTypeUsageSet {
@@ -217,20 +395,12 @@ pub(crate) fn tensor_from_data(
         .into_vec::<f32>()
         .map_err(|err| DylibError::Data(err.to_string()))?;
 
-    let runtime = get_runtime(device.runtime_id)?;
-    let handle = runtime
-        .plugin
-        .tensor_from_f32_data(device.handle, requested_shape.as_slice(), &values)
-        .map_err(map_call_error)?;
-
-    let shape = runtime
-        .plugin
-        .tensor_shape(handle)
-        .map(|dims| Shape::new_raw(dims.into()))
-        .unwrap_or(requested_shape);
+    let (runtime, snapshot) = lookup_device(device)?;
+    let handle = runtime.tensor_from_f32_data(snapshot.handle, &requested_shape, &values)?;
+    let shape = runtime.tensor_shape_or(handle, requested_shape);
 
     Ok(DylibTensor::new(
-        device.runtime_id,
+        snapshot.runtime_id,
         device.clone(),
         handle,
         DType::F32,
@@ -240,16 +410,8 @@ pub(crate) fn tensor_from_data(
 
 pub(crate) fn tensor_into_data(tensor: DylibTensor) -> Result<TensorData, DylibError> {
     let runtime = get_runtime(tensor.runtime_id)?;
-    let values = runtime
-        .plugin
-        .tensor_into_f32_data(tensor.handle)
-        .map_err(map_call_error)?;
-
-    let shape = runtime
-        .plugin
-        .tensor_shape(tensor.handle)
-        .map(|dims| Shape::new_raw(dims.into()))
-        .unwrap_or_else(|_| tensor.shape.clone());
+    let values = runtime.tensor_into_f32_data(tensor.handle)?;
+    let shape = runtime.tensor_shape_or(tensor.handle, tensor.shape.clone());
 
     Ok(TensorData::new(values, shape))
 }
@@ -278,17 +440,16 @@ pub(crate) fn tensor_binary(
         )));
     }
 
-    let runtime = get_runtime(lhs.runtime_id)?;
-    let handle = runtime
-        .plugin
-        .tensor_binary(op, lhs.handle, rhs.handle)
-        .map_err(map_call_error)?;
+    if lhs.device != rhs.device {
+        return Err(DylibError::InvalidInput(format!(
+            "Cross-device operations are not supported (lhs={}, rhs={})",
+            lhs.device.registry_index, rhs.device.registry_index
+        )));
+    }
 
-    let shape = runtime
-        .plugin
-        .tensor_shape(handle)
-        .map(|dims| Shape::new_raw(dims.into()))
-        .unwrap_or_else(|_| lhs.shape.clone());
+    let runtime = get_runtime(lhs.runtime_id)?;
+    let handle = runtime.tensor_binary(op, lhs.handle, rhs.handle)?;
+    let shape = runtime.tensor_shape_or(handle, lhs.shape.clone());
 
     Ok(DylibTensor::new(
         lhs.runtime_id,
