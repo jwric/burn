@@ -1,8 +1,8 @@
-use alloc::boxed::Box;
-
 use burn_backend::{DeviceId, DeviceOps};
 
 use crate::backends::*;
+#[cfg(feature = "autodiff")]
+use alloc::boxed::Box;
 
 /// Represents a device for the [`Dispatch`](crate::Dispatch).
 ///
@@ -52,6 +52,10 @@ pub enum DispatchDevice {
     /// The [LibTorch backend](LibTorch) device.
     #[cfg(feature = "tch")]
     LibTorch(LibTorchDevice),
+
+    /// A backend loaded from a dynamic library.
+    #[cfg(feature = "dylib")]
+    Dylib(DylibDevice),
 
     /// The [autodiff enabled backend](Autodiff) device.
     #[cfg(feature = "autodiff")]
@@ -131,6 +135,8 @@ impl core::fmt::Debug for DispatchDevice {
             Self::NdArray(device) => f.debug_tuple("NdArray").field(device).finish(),
             #[cfg(feature = "tch")]
             Self::LibTorch(device) => f.debug_tuple("LibTorch").field(device).finish(),
+            #[cfg(feature = "dylib")]
+            Self::Dylib(device) => f.debug_tuple("Dylib").field(device).finish(),
             #[cfg(feature = "autodiff")]
             // Format without `AutodiffDevice` wrapper
             Self::Autodiff(device) => f.debug_tuple("Autodiff").field(&device.inner).finish(),
@@ -166,6 +172,11 @@ impl Default for DispatchDevice {
 
         #[cfg(feature = "ndarray")]
         return Self::NdArray(NdArrayDevice::default());
+
+        #[cfg(feature = "dylib")]
+        panic!(
+            "DispatchDevice::default() is not available for dylib backends. Use DispatchDevice::dylib(path, type_id, ordinal)."
+        );
     }
 }
 
@@ -196,6 +207,8 @@ impl PartialEq for DispatchDevice {
             (Self::NdArray(a), Self::NdArray(b)) => a == b,
             #[cfg(feature = "tch")]
             (Self::LibTorch(a), Self::LibTorch(b)) => a == b,
+            #[cfg(feature = "dylib")]
+            (Self::Dylib(a), Self::Dylib(b)) => a == b,
             #[allow(unreachable_patterns)]
             (_, _) => false,
         }
@@ -222,6 +235,17 @@ impl DispatchDevice {
         DispatchDevice::Autodiff(AutodiffDevice::new(device, checkpointing))
     }
 
+    #[cfg(feature = "dylib")]
+    /// Creates a [`DispatchDevice`] from a runtime-loaded backend shared library.
+    pub fn dylib(
+        path: impl AsRef<std::path::Path>,
+        backend_type_id: u16,
+        ordinal: usize,
+    ) -> Result<DispatchDevice, DylibError> {
+        let device = crate::dynamic::create_device_from_path(path, backend_type_id, ordinal)?;
+        Ok(DispatchDevice::Dylib(device))
+    }
+
     /// Returns a unique number per variant to encode into type_id.
     fn backend_id(&self) -> BackendId {
         match self {
@@ -241,6 +265,8 @@ impl DispatchDevice {
             Self::NdArray(_) => BackendId::NdArray,
             #[cfg(feature = "tch")]
             Self::LibTorch(_) => BackendId::LibTorch,
+            #[cfg(feature = "dylib")]
+            Self::Dylib(_) => BackendId::Dylib,
             #[cfg(feature = "autodiff")]
             Self::Autodiff(device) => device.inner.backend_id(),
         }
@@ -281,6 +307,8 @@ pub(crate) enum BackendId {
     NdArray = 6,
     #[cfg(feature = "tch")]
     LibTorch = 7,
+    #[cfg(feature = "dylib")]
+    Dylib = 8,
 }
 
 impl From<BackendId> for u16 {
@@ -310,6 +338,8 @@ impl TryFrom<u16> for BackendId {
             6 => Ok(Self::NdArray),
             #[cfg(feature = "tch")]
             7 => Ok(Self::LibTorch),
+            #[cfg(feature = "dylib")]
+            8 => Ok(Self::Dylib),
             _ => Err(()),
         }
     }
@@ -347,6 +377,11 @@ impl burn_backend::Device for DispatchDevice {
             BackendId::NdArray => Self::NdArray(NdArrayDevice::from_id(device_id)),
             #[cfg(feature = "tch")]
             BackendId::LibTorch => Self::LibTorch(LibTorchDevice::from_id(device_id)),
+            #[cfg(feature = "dylib")]
+            BackendId::Dylib => Self::Dylib(
+                crate::dynamic::device_from_registry(device_id.index_id)
+                    .unwrap_or_else(|err| panic!("{err}")),
+            ),
         }
     }
 
@@ -368,6 +403,8 @@ impl burn_backend::Device for DispatchDevice {
             Self::NdArray(device) => device.to_id(),
             #[cfg(feature = "tch")]
             Self::LibTorch(device) => device.to_id(),
+            #[cfg(feature = "dylib")]
+            Self::Dylib(device) => DeviceId::new(0, device.registry_index),
             #[cfg(feature = "autodiff")]
             Self::Autodiff(device) => device.inner.to_id(),
         };
@@ -429,5 +466,12 @@ impl From<NdArrayDevice> for DispatchDevice {
 impl From<LibTorchDevice> for DispatchDevice {
     fn from(device: LibTorchDevice) -> Self {
         DispatchDevice::LibTorch(device)
+    }
+}
+
+#[cfg(feature = "dylib")]
+impl From<DylibDevice> for DispatchDevice {
+    fn from(device: DylibDevice) -> Self {
+        DispatchDevice::Dylib(device)
     }
 }

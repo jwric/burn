@@ -105,6 +105,8 @@ impl Backend for Dispatch {
             BackendId::NdArray => NdArray::<f32>::device_count(backend_type_id),
             #[cfg(feature = "tch")]
             BackendId::LibTorch => LibTorch::<f32>::device_count(backend_type_id),
+            #[cfg(feature = "dylib")]
+            BackendId::Dylib => Dylib::<f32>::device_count(backend_type_id),
         }
     }
 }
@@ -136,6 +138,8 @@ impl AutodiffBackend for Dispatch {
                 DispatchTensorKind::NdArray(tensor) => tensor.autodiff().backward(),
                 #[cfg(feature = "tch")]
                 DispatchTensorKind::LibTorch(tensor) => tensor.autodiff().backward(),
+                #[cfg(feature = "dylib")]
+                DispatchTensorKind::Dylib(tensor) => tensor.autodiff().backward(),
                 DispatchTensorKind::Autodiff(_) => {
                     panic!("Autodiff should not wrap an autodiff tensor.")
                 }
@@ -192,6 +196,11 @@ impl AutodiffBackend for Dispatch {
                     .as_autodiff()
                     .grad(grads)
                     .map(|t| DispatchTensorKind::LibTorch(crate::BackendTensor::Float(t))),
+                #[cfg(feature = "dylib")]
+                DispatchTensorKind::Dylib(tensor) => tensor
+                    .as_autodiff()
+                    .grad(grads)
+                    .map(|t| DispatchTensorKind::Dylib(crate::BackendTensor::Float(t))),
                 DispatchTensorKind::Autodiff(_) => {
                     panic!("Autodiff should not wrap an autodiff tensor.")
                 }
@@ -252,6 +261,11 @@ impl AutodiffBackend for Dispatch {
                     .as_autodiff()
                     .grad_remove(grads)
                     .map(|t| DispatchTensorKind::LibTorch(crate::BackendTensor::Float(t))),
+                #[cfg(feature = "dylib")]
+                DispatchTensorKind::Dylib(tensor) => tensor
+                    .as_autodiff()
+                    .grad_remove(grads)
+                    .map(|t| DispatchTensorKind::Dylib(crate::BackendTensor::Float(t))),
                 DispatchTensorKind::Autodiff(_) => {
                     panic!("Autodiff should not wrap an autodiff tensor.")
                 }
@@ -306,6 +320,10 @@ impl AutodiffBackend for Dispatch {
                 (DispatchTensorKind::NdArray(tensor), DispatchTensorKind::NdArray(grad)) => {
                     tensor.as_autodiff().grad_replace(grads, grad.float())
                 }
+                #[cfg(feature = "dylib")]
+                (DispatchTensorKind::Dylib(tensor), DispatchTensorKind::Dylib(grad)) => {
+                    tensor.as_autodiff().grad_replace(grads, grad.float())
+                }
                 (DispatchTensorKind::Autodiff(_), _) => {
                     panic!("Autodiff should not wrap an autodiff tensor.")
                 }
@@ -356,6 +374,10 @@ impl AutodiffBackend for Dispatch {
                 ),
                 #[cfg(feature = "tch")]
                 DispatchTensorKind::LibTorch(tensor) => DispatchTensorKind::LibTorch(
+                    crate::BackendTensor::Float(tensor.autodiff().primitive),
+                ),
+                #[cfg(feature = "dylib")]
+                DispatchTensorKind::Dylib(tensor) => DispatchTensorKind::Dylib(
                     crate::BackendTensor::Float(tensor.autodiff().primitive),
                 ),
                 DispatchTensorKind::Autodiff(_) => {
@@ -439,6 +461,12 @@ impl AutodiffBackend for Dispatch {
                     )),
                 )))
             }
+            #[cfg(feature = "dylib")]
+            DispatchTensorKind::Dylib(tensor) => DispatchTensorKind::Autodiff(Box::new(
+                DispatchTensorKind::Dylib(crate::BackendTensor::Autodiff(
+                    Autodiff::<Dylib<f32>>::from_inner(tensor.float()),
+                )),
+            )),
             DispatchTensorKind::Autodiff(_) => {
                 panic!("Autodiff should not wrap an autodiff tensor.")
             }
@@ -481,6 +509,8 @@ impl DispatchTensorKind {
             DispatchTensorKind::NdArray(tensor) => DispatchDevice::NdArray(tensor.device()),
             #[cfg(feature = "tch")]
             DispatchTensorKind::LibTorch(tensor) => DispatchDevice::LibTorch(tensor.device()),
+            #[cfg(feature = "dylib")]
+            DispatchTensorKind::Dylib(tensor) => DispatchDevice::Dylib(tensor.device()),
             #[cfg(feature = "autodiff")]
             DispatchTensorKind::Autodiff(tensor) => DispatchDevice::autodiff(tensor.device()),
         }
@@ -538,6 +568,10 @@ impl Dispatch {
             #[cfg(feature = "tch")]
             DispatchDevice::LibTorch(_) => {
                 <<LibTorch as Backend>::QuantizedTensorPrimitive as QTensorPrimitive>::default_scheme()
+            }
+            #[cfg(feature = "dylib")]
+            DispatchDevice::Dylib(_) => {
+                <<Dylib as Backend>::QuantizedTensorPrimitive as QTensorPrimitive>::default_scheme()
             }
             #[cfg(feature = "autodiff")]
             DispatchDevice::Autodiff(ad_device) => Self::default_quant_scheme(&ad_device.inner),

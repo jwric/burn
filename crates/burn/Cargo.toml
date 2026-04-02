@@ -184,7 +184,7 @@ cpu = ["burn-cpu", "burn-dispatch?/cpu"]
 dispatch = ["burn-dispatch"]
 
 # Experimental runtime backend loading via shared libraries.
-dylib = ["std", "burn-dylib"]
+dylib = ["std", "burn-dylib", "burn-dispatch?/dylib"]
 
 [dependencies]
 

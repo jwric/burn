@@ -1,3 +1,6 @@
 [alias]
 xtask = "run --target-dir target/xtask --color always --package xtask --bin xtask --"
 run-checks = "xtask -c all validate --release"
+
+[patch.crates-io]
+cubecl-hip-sys = { path = "../cubecl-hip-sys/crates/cubecl-hip-sys" }

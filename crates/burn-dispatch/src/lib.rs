@@ -19,6 +19,7 @@
 //! | `Wgpu`     | `webgpu`   | WebGPU backend via `wgpu` (WGSL) |
 //! | `NdArray`  | `ndarray`  | Pure Rust CPU backend using `ndarray` |
 //! | `LibTorch` | `tch`      | Libtorch backend via `tch` |
+//! | `Dylib`    | `dylib`    | Runtime-loaded backend via shared library |
 //! | `Autodiff` | `autodiff` | Autodiff-enabled backend (used in combination with any of the backends above) |
 //!
 //! **Note:** WGPU-based backends (`metal`, `vulkan`, `webgpu`) are mutually exclusive.
@@ -38,6 +39,7 @@
 //! backends** to prevent unintended behavior.
 
 #[cfg(not(any(
+    feature = "dylib",
     feature = "cpu",
     feature = "cuda",
     wgpu_metal,
@@ -51,6 +53,9 @@ compile_error!("At least one backend feature must be enabled.");
 
 #[macro_use]
 mod macros;
+
+#[cfg(feature = "dylib")]
+mod dynamic;
 
 mod backend;
 mod device;
@@ -87,4 +92,7 @@ pub(crate) mod backends {
     pub use burn_ndarray::{NdArray, NdArrayDevice};
     #[cfg(feature = "tch")]
     pub use burn_tch::{LibTorch, LibTorchDevice};
+
+    #[cfg(feature = "dylib")]
+    pub use super::dynamic::{Dylib, DylibDevice, DylibError};
 }

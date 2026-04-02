@@ -218,6 +218,10 @@ pub enum DispatchTensorKind {
     #[cfg(feature = "tch")]
     LibTorch(BackendTensor<LibTorch>),
 
+    /// Tensor managed by a dynamically loaded backend.
+    #[cfg(feature = "dylib")]
+    Dylib(BackendTensor<Dylib>),
+
     /// The [autodiff enabled backend](Autodiff) tensor.
     #[cfg(feature = "autodiff")]
     Autodiff(Box<DispatchTensorKind>),
@@ -242,6 +246,8 @@ impl TensorMetadata for DispatchTensorKind {
             Self::NdArray(tensor) => tensor.dtype(),
             #[cfg(feature = "tch")]
             Self::LibTorch(tensor) => tensor.dtype(),
+            #[cfg(feature = "dylib")]
+            Self::Dylib(tensor) => tensor.dtype(),
             #[cfg(feature = "autodiff")]
             Self::Autodiff(tensor) => tensor.dtype(),
         }
@@ -265,6 +271,8 @@ impl TensorMetadata for DispatchTensorKind {
             Self::NdArray(tensor) => tensor.shape(),
             #[cfg(feature = "tch")]
             Self::LibTorch(tensor) => tensor.shape(),
+            #[cfg(feature = "dylib")]
+            Self::Dylib(tensor) => tensor.shape(),
             #[cfg(feature = "autodiff")]
             Self::Autodiff(tensor) => tensor.shape(),
         }
@@ -290,6 +298,8 @@ impl QTensorPrimitive for DispatchTensorKind {
             Self::NdArray(tensor) => tensor.scheme(),
             #[cfg(feature = "tch")]
             Self::LibTorch(tensor) => tensor.scheme(),
+            #[cfg(feature = "dylib")]
+            Self::Dylib(tensor) => tensor.scheme(),
             #[cfg(feature = "autodiff")]
             Self::Autodiff(tensor) => tensor.scheme(),
         }

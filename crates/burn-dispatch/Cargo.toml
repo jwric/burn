@@ -28,10 +28,12 @@ default = [
     "burn-rocm?/default",
     "burn-tch?/default",
     "burn-wgpu?/default",
+    "dylib",
 ]
 doc = ["default"]
 std = [
     "burn-backend/std",
+    "burn-dylib?/std",
     "burn-autodiff?/std",
     "burn-cpu?/std",
     "burn-cuda?/std",
@@ -49,10 +51,11 @@ tracing = [
     "burn-tch?/tracing",
     "burn-wgpu?/tracing",
 ]
-distributed = ["std", 
+distributed = [
+    "std",
     "burn-backend/distributed",
     "burn-autodiff?/distributed",
-    "burn-cuda?/distributed"
+    "burn-cuda?/distributed",
 ]
 
 # Backends
@@ -66,6 +69,7 @@ metal = ["wgpu", "burn-wgpu/metal"]
 wgpu = ["burn-wgpu"]
 cpu = ["burn-cpu"]
 autodiff = ["burn-autodiff"]
+dylib = ["std", "burn-dylib"]
 
 # Backend features
 autotune = [
@@ -98,6 +102,7 @@ burn-ndarray = { path = "../burn-ndarray", version = "=0.21.0-pre.2", optional =
 burn-tch = { path = "../burn-tch", version = "=0.21.0-pre.2", optional = true, default-features = false }
 burn-rocm = { path = "../burn-rocm", version = "=0.21.0-pre.2", optional = true, default-features = false }
 burn-wgpu = { path = "../burn-wgpu", version = "=0.21.0-pre.2", optional = true, default-features = false }
+burn-dylib = { path = "../burn-dylib", version = "=0.21.0-pre.2", optional = true, default-features = false }
 
 # Op macros with `.as_$inner_kind()`
 paste = { workspace = true }
