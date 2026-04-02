@@ -404,7 +404,7 @@ impl burn_backend::Device for DispatchDevice {
             #[cfg(feature = "tch")]
             Self::LibTorch(device) => device.to_id(),
             #[cfg(feature = "dylib")]
-            Self::Dylib(device) => DeviceId::new(0, device.registry_index),
+            Self::Dylib(device) => device.to_id(),
             #[cfg(feature = "autodiff")]
             Self::Autodiff(device) => device.inner.to_id(),
         };
