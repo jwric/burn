@@ -1,5 +1,7 @@
-use burn_dylib::TensorBinaryOp;
-use burn_dylib::adapter::{FloatTensorPlugin, PluginError, PluginMetadata, PluginResult};
+use burn_dylib::adapter::{
+    DenseTensorData, FloatTensorPlugin, PluginError, PluginMetadata, PluginResult,
+};
+use burn_dylib::{DenseTensorBinaryOp, DenseTensorDType};
 
 #[cfg(not(feature = "variant-b"))]
 const BACKEND_NAME_A: &[u8] = b"mock-plugin-a\0";
@@ -120,32 +122,56 @@ impl PluginMetadata for MockPlugin {
 
 impl FloatTensorPlugin for MockPlugin {
     type FloatTensor = MockTensor;
+    type IntTensor = MockTensor;
+    type BoolTensor = MockTensor;
 
-    fn tensor_from_f32_data(
+    fn dense_float_from_data(
         _device: &Self::Device,
-        shape: &[usize],
-        data: &[f32],
+        data: DenseTensorData,
     ) -> PluginResult<Self::FloatTensor> {
-        create_tensor(shape, data)
+        if data.dtype != DenseTensorDType::F32 {
+            return Err(PluginError::unsupported(b"only f32 dense tensors are supported\0"));
+        }
+        if data.bytes.len() % core::mem::size_of::<f32>() != 0 {
+            return Err(invalid_argument());
+        }
+
+        let values = data
+            .bytes
+            .chunks_exact(core::mem::size_of::<f32>())
+            .map(|chunk| f32::from_ne_bytes(chunk.try_into().expect("chunk size should match")))
+            .collect::<Vec<_>>();
+
+        create_tensor(&data.shape, &values)
     }
 
-    fn tensor_into_f32_data(tensor: &Self::FloatTensor) -> PluginResult<Vec<f32>> {
-        Ok(tensor.data.clone())
+    fn dense_float_into_data(tensor: &Self::FloatTensor) -> PluginResult<DenseTensorData> {
+        let bytes = tensor
+            .data
+            .iter()
+            .flat_map(|value| value.to_ne_bytes())
+            .collect::<Vec<_>>();
+
+        Ok(DenseTensorData {
+            dtype: DenseTensorDType::F32,
+            shape: tensor.shape.clone(),
+            bytes,
+        })
     }
 
-    fn tensor_shape(tensor: &Self::FloatTensor) -> PluginResult<Vec<usize>> {
+    fn float_shape(tensor: &Self::FloatTensor) -> PluginResult<Vec<usize>> {
         Ok(tensor.shape.clone())
     }
 
-    fn tensor_binary(
-        op: TensorBinaryOp,
-        _device: &Self::Device,
+    fn float_binary(
+        op: DenseTensorBinaryOp,
         lhs: &Self::FloatTensor,
         rhs: &Self::FloatTensor,
     ) -> PluginResult<Self::FloatTensor> {
         match op {
-            TensorBinaryOp::Add => tensor_add_impl(lhs, rhs),
-            TensorBinaryOp::Matmul => tensor_matmul_impl(lhs, rhs),
+            DenseTensorBinaryOp::Add => tensor_add_impl(lhs, rhs),
+            DenseTensorBinaryOp::Matmul => tensor_matmul_impl(lhs, rhs),
+            _ => Err(PluginError::unsupported(b"float op not implemented\0")),
         }
     }
 }

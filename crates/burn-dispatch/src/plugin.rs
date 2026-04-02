@@ -10,9 +10,13 @@
 //! ops use the eager `Dispatch` backend surface.
 
 use burn_backend::ops::FloatTensorOps;
-use burn_backend::{Backend, Device as BurnDevice, DeviceId, Shape, TensorData, TensorMetadata};
-use burn_dylib::adapter::{FloatTensorPlugin, PluginError, PluginMetadata, PluginResult};
-use burn_dylib::{BackendPluginV1, BackendTensorOpsV1, TensorBinaryOp};
+use burn_backend::{
+    Backend, DType, Device as BurnDevice, DeviceId, Shape, TensorData, TensorMetadata,
+};
+use burn_dylib::adapter::{
+    DenseTensorData, FloatTensorPlugin, PluginError, PluginMetadata, PluginResult,
+};
+use burn_dylib::{BackendPluginV1, BackendTensorOpsV1, DenseTensorBinaryOp, DenseTensorDType};
 
 #[cfg(feature = "dylib")]
 use crate::BackendId;
@@ -137,44 +141,59 @@ impl PluginMetadata for DispatchPlugin {
 
 impl FloatTensorPlugin for DispatchPlugin {
     type FloatTensor = DispatchTensor;
+    type IntTensor = DispatchTensor;
+    type BoolTensor = DispatchTensor;
 
-    fn tensor_from_f32_data(
+    fn dense_float_from_data(
         device: &Self::Device,
-        shape: &[usize],
-        data: &[f32],
+        data: DenseTensorData,
     ) -> PluginResult<Self::FloatTensor> {
+        if data.dtype != DenseTensorDType::F32 {
+            return Err(PluginError::unsupported(
+                b"only f32 dense tensors are supported\0",
+            ));
+        }
+
         Ok(<Dispatch as FloatTensorOps<Dispatch>>::float_from_data(
-            TensorData::new(data.to_vec(), Shape::new_raw(shape.to_vec().into())),
+            TensorData::from_bytes_vec(data.bytes, Shape::new_raw(data.shape.into()), DType::F32),
             device,
         ))
     }
 
-    fn tensor_into_f32_data(tensor: &Self::FloatTensor) -> PluginResult<Vec<f32>> {
+    fn dense_float_into_data(tensor: &Self::FloatTensor) -> PluginResult<DenseTensorData> {
         let data = burn_backend::read_sync(
             <Dispatch as FloatTensorOps<Dispatch>>::float_into_data(tensor.clone()),
         )
         .map_err(|_| execution_failed())?;
 
-        data.into_vec::<f32>().map_err(|_| execution_failed())
+        if data.dtype != DType::F32 {
+            return Err(execution_failed());
+        }
+
+        Ok(DenseTensorData {
+            dtype: DenseTensorDType::F32,
+            shape: data.shape.as_slice().to_vec(),
+            bytes: data.as_bytes().to_vec(),
+        })
     }
 
-    fn tensor_shape(tensor: &Self::FloatTensor) -> PluginResult<Vec<usize>> {
+    fn float_shape(tensor: &Self::FloatTensor) -> PluginResult<Vec<usize>> {
         Ok(tensor.shape().as_slice().to_vec())
     }
 
-    fn tensor_binary(
-        op: TensorBinaryOp,
-        _device: &Self::Device,
+    fn float_binary(
+        op: DenseTensorBinaryOp,
         lhs: &Self::FloatTensor,
         rhs: &Self::FloatTensor,
     ) -> PluginResult<Self::FloatTensor> {
         Ok(match op {
-            TensorBinaryOp::Add => {
+            DenseTensorBinaryOp::Add => {
                 <Dispatch as FloatTensorOps<Dispatch>>::float_add(lhs.clone(), rhs.clone())
             }
-            TensorBinaryOp::Matmul => {
+            DenseTensorBinaryOp::Matmul => {
                 <Dispatch as FloatTensorOps<Dispatch>>::float_matmul(lhs.clone(), rhs.clone())
             }
+            _ => return Err(PluginError::unsupported(b"float op not implemented\0")),
         })
     }
 }
@@ -195,7 +214,8 @@ mod tests {
 
     use burn_backend::DeviceOps;
     use burn_dylib::{
-        DeviceHandle, F32SliceRef, OwnedF32Buffer, PluginStatus, PluginStatusCode, TensorHandle,
+        ByteSliceRef, DenseTensorBinaryOp, DenseTensorDType, DenseTensorDataRef, DenseTensorKind,
+        DeviceHandle, OwnedDenseTensorData, PluginStatus, PluginStatusCode, TensorHandle,
         TensorShapeRef,
     };
 
@@ -218,16 +238,24 @@ mod tests {
 
     fn create_test_tensor(device: DeviceHandle, shape: &[usize], data: &[f32]) -> TensorHandle {
         let mut out = TensorHandle::INVALID;
+        let bytes = data
+            .iter()
+            .flat_map(|value| value.to_ne_bytes())
+            .collect::<Vec<_>>();
         let status = unsafe {
-            (DISPATCH_TENSOR_OPS_V1.tensor_from_f32_data)(
+            (DISPATCH_TENSOR_OPS_V1.dense_tensor_from_data)(
+                DenseTensorKind::Float,
                 device,
-                TensorShapeRef {
-                    dims: shape.as_ptr(),
-                    rank: shape.len(),
-                },
-                F32SliceRef {
-                    ptr: data.as_ptr(),
-                    len: data.len(),
+                DenseTensorDataRef {
+                    dtype: DenseTensorDType::F32,
+                    shape: TensorShapeRef {
+                        dims: shape.as_ptr(),
+                        rank: shape.len(),
+                    },
+                    bytes: ByteSliceRef {
+                        ptr: bytes.as_ptr(),
+                        len: bytes.len(),
+                    },
                 },
                 &mut out,
             )
@@ -242,8 +270,14 @@ mod tests {
     }
 
     fn read_tensor(handle: TensorHandle) -> Vec<f32> {
-        let mut buffer = OwnedF32Buffer::empty();
-        let status = unsafe { (DISPATCH_TENSOR_OPS_V1.tensor_into_f32_data)(handle, &mut buffer) };
+        let mut buffer = OwnedDenseTensorData::empty(DenseTensorDType::F32);
+        let status = unsafe {
+            (DISPATCH_TENSOR_OPS_V1.dense_tensor_into_data)(
+                DenseTensorKind::Float,
+                handle,
+                &mut buffer,
+            )
+        };
         assert_eq!(
             status.code,
             PluginStatusCode::Ok,
@@ -251,13 +285,26 @@ mod tests {
             status_message(status)
         );
 
-        let values = if buffer.len == 0 {
+        assert_eq!(buffer.dtype, DenseTensorDType::F32);
+
+        let values = if buffer.bytes.len == 0 {
             Vec::new()
         } else {
-            unsafe { slice::from_raw_parts(buffer.ptr, buffer.len) }.to_vec()
+            unsafe { slice::from_raw_parts(buffer.bytes.ptr, buffer.bytes.len) }
+                .chunks_exact(core::mem::size_of::<f32>())
+                .map(|chunk| f32::from_ne_bytes(chunk.try_into().expect("chunk size should match")))
+                .collect()
         };
 
-        let status = unsafe { (DISPATCH_TENSOR_OPS_V1.release_f32_buffer)(buffer) };
+        let status = unsafe { (DISPATCH_TENSOR_OPS_V1.release_byte_buffer)(buffer.bytes) };
+        assert_eq!(
+            status.code,
+            PluginStatusCode::Ok,
+            "{:?}",
+            status_message(status)
+        );
+
+        let status = unsafe { (DISPATCH_TENSOR_OPS_V1.release_usize_buffer)(buffer.shape) };
         assert_eq!(
             status.code,
             PluginStatusCode::Ok,
@@ -295,7 +342,13 @@ mod tests {
 
         let mut add = TensorHandle::INVALID;
         let status = unsafe {
-            (DISPATCH_TENSOR_OPS_V1.tensor_binary)(TensorBinaryOp::Add, lhs, rhs, &mut add)
+            (DISPATCH_TENSOR_OPS_V1.dense_tensor_binary)(
+                DenseTensorKind::Float,
+                DenseTensorBinaryOp::Add,
+                lhs,
+                rhs,
+                &mut add,
+            )
         };
         assert_eq!(
             status.code,
@@ -310,7 +363,13 @@ mod tests {
 
         let mut matmul = TensorHandle::INVALID;
         let status = unsafe {
-            (DISPATCH_TENSOR_OPS_V1.tensor_binary)(TensorBinaryOp::Matmul, lhs, rhs, &mut matmul)
+            (DISPATCH_TENSOR_OPS_V1.dense_tensor_binary)(
+                DenseTensorKind::Float,
+                DenseTensorBinaryOp::Matmul,
+                lhs,
+                rhs,
+                &mut matmul,
+            )
         };
         assert_eq!(
             status.code,

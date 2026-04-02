@@ -2,7 +2,9 @@
 
 use burn_backend::{DType, DTypeUsage, DTypeUsageSet, ExecutionError, Shape, TensorData};
 use burn_dylib::loader::{LoadError, LoadedBackendPlugin, PluginCallError};
-use burn_dylib::{DeviceHandle, TensorBinaryOp, TensorHandle};
+use burn_dylib::{
+    DenseTensorBinaryOp, DenseTensorKind, DeviceHandle, TensorBinaryOp, TensorHandle,
+};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::path::Path;
@@ -119,13 +121,14 @@ impl DylibRuntime {
         values: &[f32],
     ) -> Result<TensorHandle, DylibError> {
         self.plugin
-            .tensor_from_f32_data(device, shape.as_slice(), values)
+            .dense_float_tensor_from_f32_data(device, shape.as_slice(), values)
             .map_err(map_call_error)
     }
 
-    fn tensor_into_f32_data(&self, tensor: TensorHandle) -> Result<Vec<f32>, DylibError> {
+    fn tensor_into_f32_data(&self, tensor: TensorHandle) -> Result<(Vec<f32>, Shape), DylibError> {
         self.plugin
-            .tensor_into_f32_data(tensor)
+            .dense_float_tensor_into_f32_data(tensor)
+            .map(|data| (data.values, Shape::new_raw(data.shape.into())))
             .map_err(map_call_error)
     }
 
@@ -136,7 +139,7 @@ impl DylibRuntime {
         rhs: TensorHandle,
     ) -> Result<TensorHandle, DylibError> {
         self.plugin
-            .tensor_binary(op, lhs, rhs)
+            .dense_tensor_binary(DenseTensorKind::Float, map_float_binary_op(op), lhs, rhs)
             .map_err(map_call_error)
     }
 
@@ -397,21 +400,19 @@ pub(crate) fn tensor_from_data(
 
     let (runtime, snapshot) = lookup_device(device)?;
     let handle = runtime.tensor_from_f32_data(snapshot.handle, &requested_shape, &values)?;
-    let shape = runtime.tensor_shape_or(handle, requested_shape);
 
     Ok(DylibTensor::new(
         snapshot.runtime_id,
         device.clone(),
         handle,
         DType::F32,
-        shape,
+        requested_shape,
     ))
 }
 
 pub(crate) fn tensor_into_data(tensor: DylibTensor) -> Result<TensorData, DylibError> {
     let runtime = get_runtime(tensor.runtime_id)?;
-    let values = runtime.tensor_into_f32_data(tensor.handle)?;
-    let shape = runtime.tensor_shape_or(tensor.handle, tensor.shape.clone());
+    let (values, shape) = runtime.tensor_into_f32_data(tensor.handle)?;
 
     Ok(TensorData::new(values, shape))
 }
@@ -458,4 +459,11 @@ pub(crate) fn tensor_binary(
         DType::F32,
         shape,
     ))
+}
+
+fn map_float_binary_op(op: TensorBinaryOp) -> DenseTensorBinaryOp {
+    match op {
+        TensorBinaryOp::Add => DenseTensorBinaryOp::Add,
+        TensorBinaryOp::Matmul => DenseTensorBinaryOp::Matmul,
+    }
 }

@@ -17,6 +17,9 @@
 
 use core::ffi::c_char;
 
+mod dense;
+pub use dense::*;
+
 /// Trait-backed helpers for implementing backend plugins without hand-writing
 /// the whole C ABI shim.
 #[cfg(feature = "std")]
@@ -281,6 +284,70 @@ pub struct BackendTensorOpsV1 {
     pub release_f32_buffer: ReleaseF32BufferFn,
     /// Releases a plugin-allocated shape buffer.
     pub release_usize_buffer: ReleaseUsizeBufferFn,
+    /// Releases a plugin-allocated byte buffer.
+    pub release_byte_buffer: ReleaseByteBufferFn,
+    /// Creates a dense tensor from raw host bytes and dtype metadata.
+    pub dense_tensor_from_data: DenseTensorFromDataFn,
+    /// Materializes a dense tensor as raw host bytes plus metadata.
+    pub dense_tensor_into_data: DenseTensorIntoDataFn,
+    /// Creates an empty dense tensor.
+    pub dense_tensor_empty: DenseTensorEmptyFn,
+    /// Creates a full dense tensor.
+    pub dense_tensor_full: DenseTensorFullFn,
+    /// Creates a random dense tensor.
+    pub dense_tensor_random: DenseTensorRandomFn,
+    /// Runs a dense unary tensor op.
+    pub dense_tensor_unary: DenseTensorUnaryFn,
+    /// Runs a dense same-kind binary tensor op.
+    pub dense_tensor_binary: DenseTensorBinaryFn,
+    /// Runs a dense scalar tensor op.
+    pub dense_tensor_scalar: DenseTensorScalarFn,
+    /// Runs a dense tensor comparison.
+    pub dense_tensor_comparison: DenseTensorComparisonFn,
+    /// Runs a dense tensor comparison with a scalar rhs.
+    pub dense_tensor_comparison_scalar: DenseTensorComparisonScalarFn,
+    /// Runs a dense tensor reduction.
+    pub dense_tensor_reduce: DenseTensorReduceFn,
+    /// Runs a dense tensor dimensional reduction.
+    pub dense_tensor_reduce_dim: DenseTensorReduceDimFn,
+    /// Runs a dense predicate reduction.
+    pub dense_tensor_predicate_reduce: DenseTensorPredicateReduceFn,
+    /// Runs a dense dimensional predicate reduction.
+    pub dense_tensor_predicate_reduce_dim: DenseTensorPredicateReduceDimFn,
+    /// Runs a dense arg reduction.
+    pub dense_tensor_arg: DenseTensorArgFn,
+    /// Runs a dense tensor transform.
+    pub dense_tensor_transform: DenseTensorTransformFn,
+    /// Runs a dense slice op.
+    pub dense_tensor_slice: DenseTensorSliceFn,
+    /// Runs a dense slice-assign op.
+    pub dense_tensor_slice_assign: DenseTensorSliceAssignFn,
+    /// Runs a dense gather op.
+    pub dense_tensor_gather: DenseTensorGatherFn,
+    /// Runs a dense scatter op.
+    pub dense_tensor_scatter: DenseTensorScatterFn,
+    /// Runs a dense select op.
+    pub dense_tensor_select: DenseTensorSelectFn,
+    /// Runs a dense select-assign op.
+    pub dense_tensor_select_assign: DenseTensorSelectAssignFn,
+    /// Runs a dense mask-where op.
+    pub dense_tensor_mask_where: DenseTensorMaskWhereFn,
+    /// Runs a dense mask-fill op.
+    pub dense_tensor_mask_fill: DenseTensorMaskFillFn,
+    /// Concatenates dense tensors.
+    pub dense_tensor_cat: DenseTensorCatFn,
+    /// Casts a dense tensor within its tensor kind.
+    pub dense_tensor_cast: DenseTensorCastFn,
+    /// Converts a dense tensor across tensor kinds.
+    pub dense_tensor_convert: DenseTensorConvertFn,
+    /// Runs a dense binary op with an extra dimension parameter.
+    pub dense_tensor_binary_dim: DenseTensorBinaryDimFn,
+    /// Sorts a dense tensor.
+    pub dense_tensor_sort: DenseTensorSortFn,
+    /// Sorts a dense tensor and also returns indices.
+    pub dense_tensor_sort_with_indices: DenseTensorSortWithIndicesFn,
+    /// Returns argsort indices for a dense tensor.
+    pub dense_tensor_argsort: DenseTensorArgsortFn,
 }
 
 /// Entrypoint function exported from plugin dynamic libraries for tensor operations.
@@ -512,9 +579,10 @@ pub mod loader {
     use super::{
         BACKEND_PLUGIN_ABI_VERSION, BACKEND_PLUGIN_SYMBOL, BACKEND_TENSOR_OPS_ABI_VERSION,
         BACKEND_TENSOR_OPS_SYMBOL, BackendPluginEntrypoint, BackendPluginV1,
-        BackendTensorOpsEntrypoint, BackendTensorOpsV1, DeviceHandle, F32SliceRef, OwnedF32Buffer,
-        OwnedUsizeBuffer, PluginStatus, PluginStatusCode, TensorBinaryOp, TensorHandle,
-        TensorShapeRef,
+        BackendTensorOpsEntrypoint, BackendTensorOpsV1, ByteSliceRef, DenseTensorBinaryOp,
+        DenseTensorDType, DenseTensorDataRef, DenseTensorKind, DeviceHandle, F32SliceRef,
+        OwnedByteBuffer, OwnedDenseTensorData, OwnedF32Buffer, OwnedUsizeBuffer, PluginStatus,
+        PluginStatusCode, TensorBinaryOp, TensorHandle, TensorShapeRef,
     };
     use core::ffi::c_char;
     use libloading::{Library, Symbol};
@@ -623,6 +691,26 @@ pub mod loader {
 
     impl Error for PluginCallError {}
 
+    /// Safe host-side dense tensor payload materialized from a plugin call.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct DenseHostTensorData {
+        /// Tensor data type.
+        pub dtype: DenseTensorDType,
+        /// Tensor shape.
+        pub shape: Vec<usize>,
+        /// Tensor bytes.
+        pub bytes: Vec<u8>,
+    }
+
+    /// Safe host-side dense float tensor payload materialized from a plugin call.
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct DenseF32TensorData {
+        /// Tensor shape.
+        pub shape: Vec<usize>,
+        /// Tensor values.
+        pub values: Vec<f32>,
+    }
+
     /// A loaded backend plugin.
     ///
     /// The underlying dynamic library handle is retained for the whole lifetime of this object,
@@ -692,25 +780,25 @@ pub mod loader {
 
         /// Returns the backend name from the plugin.
         pub fn name(&self) -> Result<String, PluginCallError> {
-            let ptr = unsafe { (self.api().backend_name)() };
+            let ptr = unsafe { (self.plugin_api().backend_name)() };
             read_c_string(ptr, "backend_name")
         }
 
         /// Forwards a seed value to the loaded backend.
         pub fn seed(&self, seed: u64) -> Result<(), PluginCallError> {
-            let status = unsafe { (self.api().seed)(seed) };
+            let status = unsafe { (self.plugin_api().seed)(seed) };
             check_status(status)
         }
 
         /// Synchronizes all pending operations on the backend.
         pub fn sync(&self) -> Result<(), PluginCallError> {
-            let status = unsafe { (self.api().sync)() };
+            let status = unsafe { (self.plugin_api().sync)() };
             check_status(status)
         }
 
         /// Returns the number of devices for the provided backend type identifier.
         pub fn device_count(&self, type_id: u16) -> usize {
-            unsafe { (self.api().device_count)(type_id) }
+            unsafe { (self.plugin_api().device_count)(type_id) }
         }
 
         /// Creates a backend device handle.
@@ -721,7 +809,7 @@ pub mod loader {
         ) -> Result<DeviceHandle, PluginCallError> {
             let mut handle = DeviceHandle::INVALID;
             let status =
-                unsafe { (self.tensor_ops().create_device)(type_id, ordinal, &mut handle) };
+                unsafe { (self.tensor_ops_api().create_device)(type_id, ordinal, &mut handle) };
             check_status(status)?;
             if !handle.is_valid() {
                 return Err(PluginCallError::InvalidHandle("device"));
@@ -731,7 +819,7 @@ pub mod loader {
 
         /// Releases a backend device handle.
         pub fn release_device(&self, device: DeviceHandle) -> Result<(), PluginCallError> {
-            let status = unsafe { (self.tensor_ops().release_device)(device) };
+            let status = unsafe { (self.tensor_ops_api().release_device)(device) };
             check_status(status)
         }
 
@@ -752,7 +840,12 @@ pub mod loader {
                 len: data.len(),
             };
             let status = unsafe {
-                (self.tensor_ops().tensor_from_f32_data)(device, shape_ref, data_ref, &mut handle)
+                (self.tensor_ops_api().tensor_from_f32_data)(
+                    device,
+                    shape_ref,
+                    data_ref,
+                    &mut handle,
+                )
             };
             check_status(status)?;
             if !handle.is_valid() {
@@ -761,13 +854,34 @@ pub mod loader {
             Ok(handle)
         }
 
+        /// Creates a dense float tensor from host f32 data and shape.
+        pub fn dense_float_tensor_from_f32_data(
+            &self,
+            device: DeviceHandle,
+            shape: &[usize],
+            data: &[f32],
+        ) -> Result<TensorHandle, PluginCallError> {
+            let bytes = unsafe {
+                std::slice::from_raw_parts(data.as_ptr().cast::<u8>(), core::mem::size_of_val(data))
+            };
+
+            self.dense_tensor_from_data(
+                DenseTensorKind::Float,
+                device,
+                DenseTensorDType::F32,
+                shape,
+                bytes,
+            )
+        }
+
         /// Reads a tensor as a host f32 vector.
         pub fn tensor_into_f32_data(
             &self,
             tensor: TensorHandle,
         ) -> Result<Vec<f32>, PluginCallError> {
             let mut buffer = OwnedF32Buffer::empty();
-            let status = unsafe { (self.tensor_ops().tensor_into_f32_data)(tensor, &mut buffer) };
+            let status =
+                unsafe { (self.tensor_ops_api().tensor_into_f32_data)(tensor, &mut buffer) };
             check_status(status)?;
 
             if buffer.len == 0 {
@@ -782,10 +896,87 @@ pub mod loader {
             Ok(values)
         }
 
+        /// Materializes a dense tensor as raw host bytes plus metadata.
+        pub fn dense_tensor_into_data(
+            &self,
+            kind: DenseTensorKind,
+            tensor: TensorHandle,
+        ) -> Result<DenseHostTensorData, PluginCallError> {
+            let mut buffer = OwnedDenseTensorData::empty(DenseTensorDType::F32);
+            let status = unsafe {
+                (self.tensor_ops_api().dense_tensor_into_data)(kind, tensor, &mut buffer)
+            };
+            check_status(status)?;
+
+            let shape = if buffer.shape.len == 0 {
+                Vec::new()
+            } else {
+                if buffer.shape.ptr.is_null() {
+                    return Err(PluginCallError::NullPointer("dense_tensor_into_data.shape"));
+                }
+
+                unsafe { std::slice::from_raw_parts(buffer.shape.ptr, buffer.shape.len) }.to_vec()
+            };
+
+            let bytes = if buffer.bytes.len == 0 {
+                Vec::new()
+            } else {
+                if buffer.bytes.ptr.is_null() {
+                    return Err(PluginCallError::NullPointer("dense_tensor_into_data.bytes"));
+                }
+
+                unsafe { std::slice::from_raw_parts(buffer.bytes.ptr, buffer.bytes.len) }.to_vec()
+            };
+
+            self.release_byte_buffer(buffer.bytes)?;
+            self.release_usize_buffer(buffer.shape)?;
+
+            Ok(DenseHostTensorData {
+                dtype: buffer.dtype,
+                shape,
+                bytes,
+            })
+        }
+
+        /// Reads a dense float tensor as host f32 values plus shape metadata.
+        pub fn dense_float_tensor_into_f32_data(
+            &self,
+            tensor: TensorHandle,
+        ) -> Result<DenseF32TensorData, PluginCallError> {
+            let data = self.dense_tensor_into_data(DenseTensorKind::Float, tensor)?;
+
+            if data.dtype != DenseTensorDType::F32 {
+                return Err(PluginCallError::Failure {
+                    code: PluginStatusCode::Unsupported,
+                    message: format!(
+                        "expected dense float tensor dtype F32, found {:?}",
+                        data.dtype
+                    ),
+                });
+            }
+
+            let chunks = data.bytes.chunks_exact(core::mem::size_of::<f32>());
+            if !chunks.remainder().is_empty() {
+                return Err(PluginCallError::Failure {
+                    code: PluginStatusCode::Failed,
+                    message: String::from("dense float tensor bytes were not a multiple of f32"),
+                });
+            }
+
+            let values = chunks
+                .map(|chunk| f32::from_ne_bytes(chunk.try_into().expect("chunk size should match")))
+                .collect();
+
+            Ok(DenseF32TensorData {
+                shape: data.shape,
+                values,
+            })
+        }
+
         /// Reads the tensor shape into a host vector.
         pub fn tensor_shape(&self, tensor: TensorHandle) -> Result<Vec<usize>, PluginCallError> {
             let mut buffer = OwnedUsizeBuffer::empty();
-            let status = unsafe { (self.tensor_ops().tensor_shape)(tensor, &mut buffer) };
+            let status = unsafe { (self.tensor_ops_api().tensor_shape)(tensor, &mut buffer) };
             check_status(status)?;
 
             if buffer.len == 0 {
@@ -810,32 +1001,88 @@ pub mod loader {
             self.tensor_binary_op(op, lhs, rhs)
         }
 
+        /// Computes a same-kind dense binary tensor operation selected at runtime.
+        pub fn dense_tensor_binary(
+            &self,
+            kind: DenseTensorKind,
+            op: DenseTensorBinaryOp,
+            lhs: TensorHandle,
+            rhs: TensorHandle,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let mut out = TensorHandle::INVALID;
+            let status = unsafe {
+                (self.tensor_ops_api().dense_tensor_binary)(kind, op, lhs, rhs, &mut out)
+            };
+            check_status(status)?;
+            if !out.is_valid() {
+                return Err(PluginCallError::InvalidHandle("tensor"));
+            }
+            Ok(out)
+        }
+
         /// Releases a tensor handle.
         pub fn release_tensor(&self, tensor: TensorHandle) -> Result<(), PluginCallError> {
-            let status = unsafe { (self.tensor_ops().release_tensor)(tensor) };
+            let status = unsafe { (self.tensor_ops_api().release_tensor)(tensor) };
             check_status(status)
         }
 
-        fn api(&self) -> &BackendPluginV1 {
+        /// Returns the loaded plugin metadata table.
+        pub fn plugin_api(&self) -> &BackendPluginV1 {
             // Safety: `plugin` was checked for null at load time and the library stays loaded
             // for as long as this struct exists.
             unsafe { &*self.plugin }
         }
 
-        fn tensor_ops(&self) -> &BackendTensorOpsV1 {
+        /// Returns the loaded tensor operation table.
+        pub fn tensor_ops_api(&self) -> &BackendTensorOpsV1 {
             // Safety: `tensor_ops` was checked for null at load time and the library stays loaded
             // for as long as this struct exists.
             unsafe { &*self.tensor_ops }
         }
 
         fn release_f32_buffer(&self, buffer: OwnedF32Buffer) -> Result<(), PluginCallError> {
-            let status = unsafe { (self.tensor_ops().release_f32_buffer)(buffer) };
+            let status = unsafe { (self.tensor_ops_api().release_f32_buffer)(buffer) };
+            check_status(status)
+        }
+
+        fn release_byte_buffer(&self, buffer: OwnedByteBuffer) -> Result<(), PluginCallError> {
+            let status = unsafe { (self.tensor_ops_api().release_byte_buffer)(buffer) };
             check_status(status)
         }
 
         fn release_usize_buffer(&self, buffer: OwnedUsizeBuffer) -> Result<(), PluginCallError> {
-            let status = unsafe { (self.tensor_ops().release_usize_buffer)(buffer) };
+            let status = unsafe { (self.tensor_ops_api().release_usize_buffer)(buffer) };
             check_status(status)
+        }
+
+        fn dense_tensor_from_data(
+            &self,
+            kind: DenseTensorKind,
+            device: DeviceHandle,
+            dtype: DenseTensorDType,
+            shape: &[usize],
+            bytes: &[u8],
+        ) -> Result<TensorHandle, PluginCallError> {
+            let mut handle = TensorHandle::INVALID;
+            let data_ref = DenseTensorDataRef {
+                dtype,
+                shape: TensorShapeRef {
+                    dims: shape.as_ptr(),
+                    rank: shape.len(),
+                },
+                bytes: ByteSliceRef {
+                    ptr: bytes.as_ptr(),
+                    len: bytes.len(),
+                },
+            };
+            let status = unsafe {
+                (self.tensor_ops_api().dense_tensor_from_data)(kind, device, data_ref, &mut handle)
+            };
+            check_status(status)?;
+            if !handle.is_valid() {
+                return Err(PluginCallError::InvalidHandle("tensor"));
+            }
+            Ok(handle)
         }
 
         fn tensor_binary_op(
@@ -845,7 +1092,7 @@ pub mod loader {
             rhs: TensorHandle,
         ) -> Result<TensorHandle, PluginCallError> {
             let mut out = TensorHandle::INVALID;
-            let status = unsafe { (self.tensor_ops().tensor_binary)(op, lhs, rhs, &mut out) };
+            let status = unsafe { (self.tensor_ops_api().tensor_binary)(op, lhs, rhs, &mut out) };
             check_status(status)?;
             if !out.is_valid() {
                 return Err(PluginCallError::InvalidHandle("tensor"));
