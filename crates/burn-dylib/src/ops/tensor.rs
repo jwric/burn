@@ -14,7 +14,7 @@ use super::unsupported_op;
 
 impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
     fn float_from_data(data: TensorData, device: &Device<Self>) -> FloatTensor<Self> {
-        runtime::float_from_data(data, device).unwrap_or_else(|err| panic!("{err}"))
+        runtime::float_tensor_from_data(data, device).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_random(
@@ -29,7 +29,9 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
     fn float_into_data(
         tensor: FloatTensor<Self>,
     ) -> impl Future<Output = Result<TensorData, ExecutionError>> + Send {
-        core::future::ready(runtime::float_into_data(tensor).map_err(runtime::to_execution_error))
+        core::future::ready(
+            runtime::float_tensor_into_data(tensor).map_err(runtime::to_execution_error),
+        )
     }
 
     fn float_device(tensor: &FloatTensor<Self>) -> Device<Self> {
@@ -37,7 +39,7 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
     }
 
     fn float_to_device(tensor: FloatTensor<Self>, device: &Device<Self>) -> FloatTensor<Self> {
-        runtime::float_to_device(tensor, device).unwrap_or_else(|err| panic!("{err}"))
+        runtime::float_tensor_to_device(tensor, device).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_into_int(tensor: FloatTensor<Self>, out_dtype: IntDType) -> IntTensor<Self> {
@@ -52,7 +54,7 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
     }
 
     fn float_add(lhs: FloatTensor<Self>, rhs: FloatTensor<Self>) -> FloatTensor<Self> {
-        runtime::float_add(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
+        runtime::float_tensor_add(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_add_scalar(lhs: FloatTensor<Self>, rhs: Scalar) -> FloatTensor<Self> {

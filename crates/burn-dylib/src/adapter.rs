@@ -149,7 +149,7 @@ impl<P: Backend> AdapterState<P> {
 static ADAPTER_STATES: LazyLock<Mutex<HashMap<TypeId, usize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn state<P: Backend>() -> &'static AdapterState<P> {
+fn adapter_state<P: Backend>() -> &'static AdapterState<P> {
     let mut states = ADAPTER_STATES.lock().expect("adapter state lock");
     let ptr = states
         .entry(TypeId::of::<P>())
@@ -201,9 +201,14 @@ fn try_f32_data(data: F32SliceRef) -> Result<Vec<f32>, PluginStatus> {
     Ok(values.to_vec())
 }
 
-unsafe extern "C" fn seed<P: Backend>(seed: u64) -> PluginStatus {
+// Adapter naming conventions:
+// - `abi_backend_*` shims back `BackendPluginV1` metadata/control callbacks.
+// - `abi_float_tensor_*` shims back `BackendTensorOpsV1` float tensor callbacks.
+// - `abi_release_*` shims release plugin-owned buffers/handles.
+
+unsafe extern "C" fn abi_backend_seed<P: Backend>(seed: u64) -> PluginStatus {
     with_boundary(|| {
-        for device in state::<P>().devices_snapshot() {
+        for device in adapter_state::<P>().devices_snapshot() {
             P::seed(&device, seed);
         }
 
@@ -211,9 +216,9 @@ unsafe extern "C" fn seed<P: Backend>(seed: u64) -> PluginStatus {
     })
 }
 
-unsafe extern "C" fn sync<P: Backend>() -> PluginStatus {
+unsafe extern "C" fn abi_backend_sync<P: Backend>() -> PluginStatus {
     with_boundary(|| {
-        for device in state::<P>().devices_snapshot() {
+        for device in adapter_state::<P>().devices_snapshot() {
             if P::sync(&device).is_err() {
                 return execution_error();
             }
@@ -223,11 +228,11 @@ unsafe extern "C" fn sync<P: Backend>() -> PluginStatus {
     })
 }
 
-unsafe extern "C" fn device_count<P: Backend>(type_id: u16) -> usize {
+unsafe extern "C" fn abi_backend_device_count<P: Backend>(type_id: u16) -> usize {
     catch_unwind(AssertUnwindSafe(|| P::device_count(type_id))).unwrap_or(0)
 }
 
-unsafe extern "C" fn create_device<P: Backend>(
+unsafe extern "C" fn abi_create_device<P: Backend>(
     type_id: u16,
     ordinal: usize,
     out_device: *mut DeviceHandle,
@@ -247,7 +252,7 @@ unsafe extern "C" fn create_device<P: Backend>(
             Err(_) => return invalid_argument(),
         };
         let device = P::Device::from_id(DeviceId::new(type_id, ordinal));
-        let handle = state::<P>().insert_device(device);
+        let handle = adapter_state::<P>().insert_device(device);
 
         unsafe {
             *out_device = handle;
@@ -256,14 +261,14 @@ unsafe extern "C" fn create_device<P: Backend>(
     })
 }
 
-unsafe extern "C" fn release_device<P: Backend>(device: DeviceHandle) -> PluginStatus {
+unsafe extern "C" fn abi_release_device<P: Backend>(device: DeviceHandle) -> PluginStatus {
     with_boundary(|| {
-        state::<P>().release_device(device);
+        adapter_state::<P>().release_device(device);
         ok()
     })
 }
 
-unsafe extern "C" fn tensor_from_f32_data<P: Backend>(
+unsafe extern "C" fn abi_float_tensor_from_f32_data<P: Backend>(
     device: DeviceHandle,
     shape: TensorShapeRef,
     data: F32SliceRef,
@@ -274,7 +279,7 @@ unsafe extern "C" fn tensor_from_f32_data<P: Backend>(
             return invalid_argument();
         }
 
-        let device_state = match state::<P>().lookup_device(device) {
+        let device_state = match adapter_state::<P>().lookup_device(device) {
             Ok(device_state) => device_state,
             Err(status) => return status,
         };
@@ -288,7 +293,7 @@ unsafe extern "C" fn tensor_from_f32_data<P: Backend>(
         };
 
         let tensor = P::float_from_data(TensorData::new(values, shape), &device_state);
-        let handle = state::<P>().insert_tensor(device, tensor);
+        let handle = adapter_state::<P>().insert_tensor(device, tensor);
 
         unsafe {
             *out_tensor = handle;
@@ -297,7 +302,7 @@ unsafe extern "C" fn tensor_from_f32_data<P: Backend>(
     })
 }
 
-unsafe extern "C" fn tensor_into_f32_data<P: Backend>(
+unsafe extern "C" fn abi_float_tensor_into_f32_data<P: Backend>(
     tensor: TensorHandle,
     out_data: *mut OwnedF32Buffer,
 ) -> PluginStatus {
@@ -306,7 +311,7 @@ unsafe extern "C" fn tensor_into_f32_data<P: Backend>(
             return invalid_argument();
         }
 
-        let tensor_state = match state::<P>().lookup_tensor(tensor) {
+        let tensor_state = match adapter_state::<P>().lookup_tensor(tensor) {
             Ok(state) => state,
             Err(status) => return status,
         };
@@ -331,7 +336,7 @@ unsafe extern "C" fn tensor_into_f32_data<P: Backend>(
     })
 }
 
-unsafe extern "C" fn tensor_shape<P: Backend>(
+unsafe extern "C" fn abi_float_tensor_shape<P: Backend>(
     tensor: TensorHandle,
     out_shape: *mut OwnedUsizeBuffer,
 ) -> PluginStatus {
@@ -340,7 +345,7 @@ unsafe extern "C" fn tensor_shape<P: Backend>(
             return invalid_argument();
         }
 
-        let tensor_state = match state::<P>().lookup_tensor(tensor) {
+        let tensor_state = match adapter_state::<P>().lookup_tensor(tensor) {
             Ok(state) => state,
             Err(status) => return status,
         };
@@ -358,7 +363,7 @@ unsafe extern "C" fn tensor_shape<P: Backend>(
     })
 }
 
-unsafe extern "C" fn tensor_add<P: Backend>(
+unsafe extern "C" fn abi_float_tensor_add<P: Backend>(
     lhs: TensorHandle,
     rhs: TensorHandle,
     out_tensor: *mut TensorHandle,
@@ -368,11 +373,11 @@ unsafe extern "C" fn tensor_add<P: Backend>(
             return invalid_argument();
         }
 
-        let lhs_state = match state::<P>().lookup_tensor(lhs) {
+        let lhs_state = match adapter_state::<P>().lookup_tensor(lhs) {
             Ok(state) => state,
             Err(status) => return status,
         };
-        let rhs_state = match state::<P>().lookup_tensor(rhs) {
+        let rhs_state = match adapter_state::<P>().lookup_tensor(rhs) {
             Ok(state) => state,
             Err(status) => return status,
         };
@@ -382,7 +387,7 @@ unsafe extern "C" fn tensor_add<P: Backend>(
         }
 
         let out = P::float_add(lhs_state.tensor, rhs_state.tensor);
-        let handle = state::<P>().insert_tensor(DeviceHandle(lhs_state.device_handle), out);
+        let handle = adapter_state::<P>().insert_tensor(DeviceHandle(lhs_state.device_handle), out);
 
         unsafe {
             *out_tensor = handle;
@@ -391,14 +396,14 @@ unsafe extern "C" fn tensor_add<P: Backend>(
     })
 }
 
-unsafe extern "C" fn release_tensor<P: Backend>(tensor: TensorHandle) -> PluginStatus {
+unsafe extern "C" fn abi_release_tensor<P: Backend>(tensor: TensorHandle) -> PluginStatus {
     with_boundary(|| {
-        state::<P>().release_tensor(tensor);
+        adapter_state::<P>().release_tensor(tensor);
         ok()
     })
 }
 
-unsafe extern "C" fn release_f32_buffer(buffer: OwnedF32Buffer) -> PluginStatus {
+unsafe extern "C" fn abi_release_f32_buffer(buffer: OwnedF32Buffer) -> PluginStatus {
     with_boundary(|| {
         if !buffer.ptr.is_null() {
             unsafe {
@@ -409,7 +414,7 @@ unsafe extern "C" fn release_f32_buffer(buffer: OwnedF32Buffer) -> PluginStatus 
     })
 }
 
-unsafe extern "C" fn release_usize_buffer(buffer: OwnedUsizeBuffer) -> PluginStatus {
+unsafe extern "C" fn abi_release_usize_buffer(buffer: OwnedUsizeBuffer) -> PluginStatus {
     with_boundary(|| {
         if !buffer.ptr.is_null() {
             unsafe {
@@ -425,9 +430,9 @@ pub const fn backend_plugin_v1<P: Backend>(backend_name: BackendNameFn) -> Backe
     BackendPluginV1 {
         abi_version: BACKEND_PLUGIN_ABI_VERSION,
         backend_name,
-        seed: seed::<P>,
-        sync: sync::<P>,
-        device_count: device_count::<P>,
+        seed: abi_backend_seed::<P>,
+        sync: abi_backend_sync::<P>,
+        device_count: abi_backend_device_count::<P>,
     }
 }
 
@@ -435,15 +440,15 @@ pub const fn backend_plugin_v1<P: Backend>(backend_name: BackendNameFn) -> Backe
 pub const fn backend_tensor_ops_v1<P: Backend>() -> BackendTensorOpsV1 {
     BackendTensorOpsV1 {
         abi_version: BACKEND_TENSOR_OPS_ABI_VERSION,
-        create_device: create_device::<P>,
-        release_device: release_device::<P>,
-        tensor_from_f32_data: tensor_from_f32_data::<P>,
-        tensor_into_f32_data: tensor_into_f32_data::<P>,
-        tensor_shape: tensor_shape::<P>,
-        tensor_add: tensor_add::<P>,
-        release_tensor: release_tensor::<P>,
-        release_f32_buffer,
-        release_usize_buffer,
+        create_device: abi_create_device::<P>,
+        release_device: abi_release_device::<P>,
+        tensor_from_f32_data: abi_float_tensor_from_f32_data::<P>,
+        tensor_into_f32_data: abi_float_tensor_into_f32_data::<P>,
+        tensor_shape: abi_float_tensor_shape::<P>,
+        tensor_add: abi_float_tensor_add::<P>,
+        release_tensor: abi_release_tensor::<P>,
+        release_f32_buffer: abi_release_f32_buffer,
+        release_usize_buffer: abi_release_usize_buffer,
     }
 }
 
@@ -452,5 +457,5 @@ pub const fn backend_tensor_ops_v1<P: Backend>() -> BackendTensorOpsV1 {
 /// This is primarily intended for tests.
 #[doc(hidden)]
 pub fn reset_state<P: Backend>() {
-    state::<P>().clear();
+    adapter_state::<P>().clear();
 }

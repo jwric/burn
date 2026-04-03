@@ -10,6 +10,11 @@ use std::sync::{Arc, LazyLock, RwLock};
 use super::device::DylibDevice;
 use super::tensor::DylibTensor;
 
+// Runtime naming conventions:
+// - `backend_*` functions forward backend metadata/control operations.
+// - `float_tensor_*` functions forward float tensor data/shape/math operations.
+// - `resolve_*` helpers provide registry context used by both paths.
+
 /// Errors that can occur while interacting with a runtime-loaded backend.
 #[derive(Debug, Clone)]
 pub enum DylibError {
@@ -188,7 +193,7 @@ fn map_call_error(err: PluginCallError) -> DylibError {
     DylibError::Plugin(err.to_string())
 }
 
-fn lookup_device(
+fn resolve_device_context(
     device: &DylibDevice,
 ) -> Result<(Arc<LoadedBackendPlugin>, DeviceSnapshot), DylibError> {
     let snapshot = REGISTRY.device_snapshot(device.registry_index)?;
@@ -274,21 +279,23 @@ pub fn device_from_registry(index_id: u32) -> Result<DylibDevice, DylibError> {
 }
 
 pub(crate) fn backend_name(device: &DylibDevice) -> String {
-    match lookup_device(device).and_then(|(runtime, _)| runtime.name().map_err(map_call_error)) {
+    match resolve_device_context(device)
+        .and_then(|(runtime, _)| runtime.backend_name().map_err(map_call_error))
+    {
         Ok(name) => format!("dylib<{name}>"),
         Err(err) => format!("dylib<error:{err}>"),
     }
 }
 
 pub(crate) fn backend_seed(device: &DylibDevice, seed: u64) {
-    let _ =
-        lookup_device(device).and_then(|(runtime, _)| runtime.seed(seed).map_err(map_call_error));
+    let _ = resolve_device_context(device)
+        .and_then(|(runtime, _)| runtime.backend_seed(seed).map_err(map_call_error));
 }
 
 pub(crate) fn backend_sync(device: &DylibDevice) -> Result<(), ExecutionError> {
-    let (runtime, _) = lookup_device(device).map_err(to_execution_error)?;
+    let (runtime, _) = resolve_device_context(device).map_err(to_execution_error)?;
     runtime
-        .sync()
+        .backend_sync()
         .map_err(map_call_error)
         .map_err(to_execution_error)
 }
@@ -300,7 +307,7 @@ pub(crate) fn dtype_usage(dtype: DType) -> DTypeUsageSet {
     }
 }
 
-pub(crate) fn float_from_data(
+pub(crate) fn float_tensor_from_data(
     data: TensorData,
     device: &DylibDevice,
 ) -> Result<DylibTensor, DylibError> {
@@ -310,12 +317,12 @@ pub(crate) fn float_from_data(
         .into_vec::<f32>()
         .map_err(|err| DylibError::Data(err.to_string()))?;
 
-    let (runtime, snapshot) = lookup_device(device)?;
+    let (runtime, snapshot) = resolve_device_context(device)?;
     let handle = runtime
-        .tensor_from_f32_data(snapshot.handle, requested_shape.as_slice(), &values)
+        .float_tensor_from_f32_data(snapshot.handle, requested_shape.as_slice(), &values)
         .map_err(map_call_error)?;
     let shape = runtime
-        .tensor_shape(handle)
+        .float_tensor_shape(handle)
         .map(|dims| Shape::new_raw(dims.into()))
         .unwrap_or(requested_shape);
 
@@ -328,20 +335,20 @@ pub(crate) fn float_from_data(
     ))
 }
 
-pub(crate) fn float_into_data(tensor: DylibTensor) -> Result<TensorData, DylibError> {
+pub(crate) fn float_tensor_into_data(tensor: DylibTensor) -> Result<TensorData, DylibError> {
     let runtime = get_runtime(tensor.runtime_id)?;
     let values = runtime
-        .tensor_into_f32_data(tensor.handle)
+        .float_tensor_into_f32_data(tensor.handle)
         .map_err(map_call_error)?;
     let shape = runtime
-        .tensor_shape(tensor.handle)
+        .float_tensor_shape(tensor.handle)
         .map(|dims| Shape::new_raw(dims.into()))
         .unwrap_or(tensor.shape.clone());
 
     Ok(TensorData::new(values, shape))
 }
 
-pub(crate) fn float_to_device(
+pub(crate) fn float_tensor_to_device(
     tensor: DylibTensor,
     device: &DylibDevice,
 ) -> Result<DylibTensor, DylibError> {
@@ -349,11 +356,14 @@ pub(crate) fn float_to_device(
         return Ok(tensor);
     }
 
-    let data = float_into_data(tensor)?;
-    float_from_data(data, device)
+    let data = float_tensor_into_data(tensor)?;
+    float_tensor_from_data(data, device)
 }
 
-pub(crate) fn float_add(lhs: DylibTensor, rhs: DylibTensor) -> Result<DylibTensor, DylibError> {
+pub(crate) fn float_tensor_add(
+    lhs: DylibTensor,
+    rhs: DylibTensor,
+) -> Result<DylibTensor, DylibError> {
     if lhs.runtime_id != rhs.runtime_id {
         return Err(DylibError::InvalidInput(format!(
             "Cross-runtime operations are not supported (lhs={}, rhs={})",
@@ -370,10 +380,10 @@ pub(crate) fn float_add(lhs: DylibTensor, rhs: DylibTensor) -> Result<DylibTenso
 
     let runtime = get_runtime(lhs.runtime_id)?;
     let handle = runtime
-        .tensor_add(lhs.handle, rhs.handle)
+        .float_tensor_add(lhs.handle, rhs.handle)
         .map_err(map_call_error)?;
     let shape = runtime
-        .tensor_shape(handle)
+        .float_tensor_shape(handle)
         .map(|dims| Shape::new_raw(dims.into()))
         .unwrap_or(lhs.shape.clone());
 

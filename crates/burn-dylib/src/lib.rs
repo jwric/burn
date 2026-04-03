@@ -14,6 +14,16 @@
 //!
 //! Compile application code without linking any heavy backend, then load a backend plugin (`.so`,
 //! `.dylib`, `.dll`) at runtime.
+//!
+//! # Naming Conventions
+//!
+//! The dylib stack follows a strict naming convention so call paths are predictable and easy to
+//! maintain:
+//! - Loader methods use `backend_*` for backend metadata/control and `float_tensor_*` for current
+//!   tensor ops.
+//! - Runtime forwarding functions mirror loader names (`backend_*`, `float_tensor_*`).
+//! - Adapter FFI shims are prefixed with `abi_*` to clearly separate C ABI glue from backend
+//!   trait calls.
 
 use core::ffi::c_char;
 
@@ -638,19 +648,19 @@ pub mod loader {
         }
 
         /// Returns the backend name from the plugin.
-        pub fn name(&self) -> Result<String, PluginCallError> {
+        pub fn backend_name(&self) -> Result<String, PluginCallError> {
             let ptr = unsafe { (self.api().backend_name)() };
             read_c_string(ptr, "backend_name")
         }
 
         /// Forwards a seed value to the loaded backend.
-        pub fn seed(&self, seed: u64) -> Result<(), PluginCallError> {
+        pub fn backend_seed(&self, seed: u64) -> Result<(), PluginCallError> {
             let status = unsafe { (self.api().seed)(seed) };
             check_status(status)
         }
 
         /// Synchronizes all pending operations on the backend.
-        pub fn sync(&self) -> Result<(), PluginCallError> {
+        pub fn backend_sync(&self) -> Result<(), PluginCallError> {
             let status = unsafe { (self.api().sync)() };
             check_status(status)
         }
@@ -682,8 +692,8 @@ pub mod loader {
             check_status(status)
         }
 
-        /// Creates a tensor from f32 data and shape.
-        pub fn tensor_from_f32_data(
+        /// Creates a float tensor from f32 data and shape.
+        pub fn float_tensor_from_f32_data(
             &self,
             device: DeviceHandle,
             shape: &[usize],
@@ -708,8 +718,8 @@ pub mod loader {
             Ok(handle)
         }
 
-        /// Reads a tensor as a host f32 vector.
-        pub fn tensor_into_f32_data(
+        /// Reads a float tensor as a host f32 vector.
+        pub fn float_tensor_into_f32_data(
             &self,
             tensor: TensorHandle,
         ) -> Result<Vec<f32>, PluginCallError> {
@@ -730,7 +740,10 @@ pub mod loader {
         }
 
         /// Reads the tensor shape into a host vector.
-        pub fn tensor_shape(&self, tensor: TensorHandle) -> Result<Vec<usize>, PluginCallError> {
+        pub fn float_tensor_shape(
+            &self,
+            tensor: TensorHandle,
+        ) -> Result<Vec<usize>, PluginCallError> {
             let mut buffer = OwnedUsizeBuffer::empty();
             let status = unsafe { (self.tensor_ops().tensor_shape)(tensor, &mut buffer) };
             check_status(status)?;
@@ -747,7 +760,8 @@ pub mod loader {
             Ok(shape)
         }
 
-        pub fn tensor_add(
+        /// Adds two float tensors and returns a newly allocated tensor handle.
+        pub fn float_tensor_add(
             &self,
             lhs: TensorHandle,
             rhs: TensorHandle,
