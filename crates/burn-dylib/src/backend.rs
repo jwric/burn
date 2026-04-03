@@ -1,7 +1,5 @@
-#![cfg(feature = "dylib")]
-
-use alloc::string::String;
 use core::marker::PhantomData;
+use std::string::String;
 
 use burn_backend::{Backend, DType, DTypeUsageSet, ExecutionError};
 

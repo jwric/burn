@@ -970,6 +970,7 @@ dependencies = [
 name = "burn-dylib"
 version = "0.21.0-pre.2"
 dependencies = [
+ "burn-backend",
  "libloading 0.8.9",
 ]
 

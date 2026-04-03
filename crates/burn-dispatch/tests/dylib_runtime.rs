@@ -90,7 +90,7 @@ fn as_f32_vec(data: TensorData) -> Vec<f32> {
 }
 
 #[test]
-fn dylib_backend_runs_add_and_matmul() {
+fn dylib_backend_runs_add() {
     let device =
         DispatchDevice::dylib(plugin_path(false), 0, 0).expect("dylib device should be created");
 
@@ -112,22 +112,6 @@ fn dylib_backend_runs_add_and_matmul() {
 
     assert_eq!(as_f32_vec(add_data), vec![6.0, 8.0, 10.0, 12.0]);
 
-    let lhs = <Dispatch as FloatTensorOps<Dispatch>>::float_from_data(
-        TensorData::new(vec![1.0, 2.0, 3.0, 4.0], Shape::new([2, 2])),
-        &device,
-    );
-    let rhs = <Dispatch as FloatTensorOps<Dispatch>>::float_from_data(
-        TensorData::new(vec![2.0, 0.0, 1.0, 2.0], Shape::new([2, 2])),
-        &device,
-    );
-
-    let matmul = <Dispatch as FloatTensorOps<Dispatch>>::float_matmul(lhs, rhs);
-    let matmul_data = burn_backend::read_sync(
-        <Dispatch as FloatTensorOps<Dispatch>>::float_into_data(matmul),
-    )
-    .expect("matmul result should be readable");
-
-    assert_eq!(as_f32_vec(matmul_data), vec![4.0, 4.0, 10.0, 8.0]);
 }
 
 #[test]

@@ -1,9 +1,7 @@
-#![cfg(feature = "dylib")]
-
 use std::sync::Arc;
 
+use crate::TensorHandle;
 use burn_backend::{DType, QTensorPrimitive, Shape, TensorMetadata, quantization::QuantScheme};
-use burn_dylib::TensorHandle;
 
 use super::device::DylibDevice;
 use super::runtime;

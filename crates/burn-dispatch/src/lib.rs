@@ -54,8 +54,6 @@ compile_error!("At least one backend feature must be enabled.");
 #[macro_use]
 mod macros;
 
-#[cfg(feature = "dylib")]
-mod dynamic;
 #[cfg(feature = "plugin")]
 pub mod plugin;
 
@@ -102,5 +100,5 @@ pub(crate) mod backends {
     pub use burn_tch::{LibTorch, LibTorchDevice};
 
     #[cfg(feature = "dylib")]
-    pub use super::dynamic::{Dylib, DylibDevice, DylibError};
+    pub use burn_dylib::{Dylib, DylibDevice, DylibError};
 }

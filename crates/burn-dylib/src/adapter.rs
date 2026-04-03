@@ -1,10 +1,11 @@
+use burn_backend::{Backend, Device as BurnDevice, DeviceId, Shape, TensorData, TensorMetadata};
+
 use crate::{
-    BACKEND_PLUGIN_ABI_VERSION, BACKEND_TENSOR_OPS_ABI_VERSION, BackendPluginV1,
+    BACKEND_PLUGIN_ABI_VERSION, BACKEND_TENSOR_OPS_ABI_VERSION, BackendNameFn, BackendPluginV1,
     BackendTensorOpsV1, DeviceHandle, F32SliceRef, OwnedF32Buffer, OwnedUsizeBuffer, PluginStatus,
-    PluginStatusCode, TensorBinaryOp, TensorHandle, TensorShapeRef,
+    PluginStatusCode, TensorHandle, TensorShapeRef,
 };
 use core::any::TypeId;
-use core::ffi::c_char;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::slice;
@@ -13,11 +14,9 @@ use std::sync::{LazyLock, Mutex};
 
 const ERR_INVALID_ARGUMENT: &[u8] = b"invalid argument\0";
 const ERR_PANIC: &[u8] = b"plugin panicked\0";
+const ERR_EXECUTION: &[u8] = b"execution error\0";
 
-/// Result type used by the plugin adapter traits.
-pub type PluginResult<T> = Result<T, PluginError>;
-
-/// Error returned by trait-based plugin implementations.
+/// Error returned by adapter helpers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PluginError {
     code: PluginStatusCode,
@@ -52,84 +51,20 @@ impl PluginError {
     }
 }
 
-/// Trait for plugin metadata and device management.
-pub trait PluginMetadata: Send + Sync + 'static {
-    /// Concrete device state stored behind plugin handles.
-    type Device: Clone + Send + Sync + 'static;
-
-    /// Returns the backend name.
-    ///
-    /// The returned bytes must be a static, null-terminated string.
-    fn backend_name() -> &'static [u8];
-
-    /// Seeds the plugin backend.
-    ///
-    /// The adapter provides all currently registered devices so backends that
-    /// only expose per-device seed APIs can still implement the global plugin
-    /// callback cleanly.
-    fn seed(seed: u64, devices: &[Self::Device]) -> PluginResult<()> {
-        let _ = (seed, devices);
-        Ok(())
-    }
-
-    /// Synchronizes the plugin backend.
-    ///
-    /// The adapter provides all currently registered devices so backends that
-    /// only expose per-device synchronization APIs can still implement the
-    /// global plugin callback cleanly.
-    fn sync(devices: &[Self::Device]) -> PluginResult<()> {
-        let _ = devices;
-        Ok(())
-    }
-
-    /// Returns how many devices are available for `type_id`.
-    fn device_count(type_id: u16) -> usize;
-
-    /// Creates a concrete device for `type_id` and `ordinal`.
-    fn create_device(type_id: u16, ordinal: usize) -> PluginResult<Self::Device>;
-}
-
-/// Trait for the float tensor operations exposed by the current plugin ABI.
-pub trait FloatTensorPlugin: PluginMetadata {
-    /// Concrete float tensor state stored behind plugin handles.
-    type FloatTensor: Clone + Send + Sync + 'static;
-
-    /// Creates a tensor from host f32 data.
-    fn tensor_from_f32_data(
-        device: &Self::Device,
-        shape: &[usize],
-        data: &[f32],
-    ) -> PluginResult<Self::FloatTensor>;
-
-    /// Materializes a tensor into host f32 data.
-    fn tensor_into_f32_data(tensor: &Self::FloatTensor) -> PluginResult<Vec<f32>>;
-
-    /// Returns the tensor shape.
-    fn tensor_shape(tensor: &Self::FloatTensor) -> PluginResult<Vec<usize>>;
-
-    /// Dispatches float binary tensor operations.
-    fn tensor_binary(
-        op: TensorBinaryOp,
-        device: &Self::Device,
-        lhs: &Self::FloatTensor,
-        rhs: &Self::FloatTensor,
-    ) -> PluginResult<Self::FloatTensor>;
-}
-
 #[derive(Clone)]
 struct TensorState<T> {
     device_handle: u64,
     tensor: T,
 }
 
-struct AdapterState<P: FloatTensorPlugin> {
+struct AdapterState<P: Backend> {
     next_device_id: AtomicU64,
     next_tensor_id: AtomicU64,
     devices: Mutex<HashMap<u64, P::Device>>,
-    tensors: Mutex<HashMap<u64, TensorState<P::FloatTensor>>>,
+    tensors: Mutex<HashMap<u64, TensorState<P::FloatTensorPrimitive>>>,
 }
 
-impl<P: FloatTensorPlugin> AdapterState<P> {
+impl<P: Backend> AdapterState<P> {
     fn new() -> Self {
         Self {
             next_device_id: AtomicU64::new(1),
@@ -167,7 +102,7 @@ impl<P: FloatTensorPlugin> AdapterState<P> {
     fn lookup_tensor(
         &self,
         handle: TensorHandle,
-    ) -> Result<TensorState<P::FloatTensor>, PluginStatus> {
+    ) -> Result<TensorState<P::FloatTensorPrimitive>, PluginStatus> {
         self.tensors
             .lock()
             .expect("tensor lock")
@@ -182,7 +117,11 @@ impl<P: FloatTensorPlugin> AdapterState<P> {
         DeviceHandle(id)
     }
 
-    fn insert_tensor(&self, device_handle: DeviceHandle, tensor: P::FloatTensor) -> TensorHandle {
+    fn insert_tensor(
+        &self,
+        device_handle: DeviceHandle,
+        tensor: P::FloatTensorPrimitive,
+    ) -> TensorHandle {
         let id = self.next_tensor_id.fetch_add(1, Ordering::Relaxed);
         self.tensors.lock().expect("tensor lock").insert(
             id,
@@ -210,7 +149,7 @@ impl<P: FloatTensorPlugin> AdapterState<P> {
 static ADAPTER_STATES: LazyLock<Mutex<HashMap<TypeId, usize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn state<P: FloatTensorPlugin>() -> &'static AdapterState<P> {
+fn state<P: Backend>() -> &'static AdapterState<P> {
     let mut states = ADAPTER_STATES.lock().expect("adapter state lock");
     let ptr = states
         .entry(TypeId::of::<P>())
@@ -227,6 +166,10 @@ fn invalid_argument() -> PluginStatus {
     PluginError::invalid_argument(ERR_INVALID_ARGUMENT).into_status()
 }
 
+fn execution_error() -> PluginStatus {
+    PluginError::failed(ERR_EXECUTION).into_status()
+}
+
 fn with_boundary(f: impl FnOnce() -> PluginStatus) -> PluginStatus {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(status) => status,
@@ -234,23 +177,16 @@ fn with_boundary(f: impl FnOnce() -> PluginStatus) -> PluginStatus {
     }
 }
 
-fn status_from_result(result: PluginResult<()>) -> PluginStatus {
-    match result {
-        Ok(()) => ok(),
-        Err(error) => error.into_status(),
-    }
-}
-
-fn try_shape(shape: TensorShapeRef) -> Result<Vec<usize>, PluginStatus> {
+fn try_shape(shape: TensorShapeRef) -> Result<Shape, PluginStatus> {
     if shape.rank == 0 {
-        return Ok(Vec::new());
+        return Ok(Shape::new([]));
     }
     if shape.dims.is_null() {
         return Err(invalid_argument());
     }
 
     let dims = unsafe { slice::from_raw_parts(shape.dims, shape.rank) };
-    Ok(dims.to_vec())
+    Ok(Shape::new_raw(dims.into()))
 }
 
 fn try_f32_data(data: F32SliceRef) -> Result<Vec<f32>, PluginStatus> {
@@ -265,29 +201,33 @@ fn try_f32_data(data: F32SliceRef) -> Result<Vec<f32>, PluginStatus> {
     Ok(values.to_vec())
 }
 
-unsafe extern "C" fn backend_name<P: FloatTensorPlugin>() -> *const c_char {
-    P::backend_name().as_ptr().cast()
-}
-
-unsafe extern "C" fn seed<P: FloatTensorPlugin>(seed: u64) -> PluginStatus {
+unsafe extern "C" fn seed<P: Backend>(seed: u64) -> PluginStatus {
     with_boundary(|| {
-        let devices = state::<P>().devices_snapshot();
-        status_from_result(P::seed(seed, &devices))
+        for device in state::<P>().devices_snapshot() {
+            P::seed(&device, seed);
+        }
+
+        ok()
     })
 }
 
-unsafe extern "C" fn sync<P: FloatTensorPlugin>() -> PluginStatus {
+unsafe extern "C" fn sync<P: Backend>() -> PluginStatus {
     with_boundary(|| {
-        let devices = state::<P>().devices_snapshot();
-        status_from_result(P::sync(&devices))
+        for device in state::<P>().devices_snapshot() {
+            if P::sync(&device).is_err() {
+                return execution_error();
+            }
+        }
+
+        ok()
     })
 }
 
-unsafe extern "C" fn device_count<P: FloatTensorPlugin>(type_id: u16) -> usize {
+unsafe extern "C" fn device_count<P: Backend>(type_id: u16) -> usize {
     catch_unwind(AssertUnwindSafe(|| P::device_count(type_id))).unwrap_or(0)
 }
 
-unsafe extern "C" fn create_device<P: FloatTensorPlugin>(
+unsafe extern "C" fn create_device<P: Backend>(
     type_id: u16,
     ordinal: usize,
     out_device: *mut DeviceHandle,
@@ -298,14 +238,15 @@ unsafe extern "C" fn create_device<P: FloatTensorPlugin>(
         }
 
         let available = P::device_count(type_id);
-        if available != 0 && ordinal >= available {
+        if available == 0 || ordinal >= available {
             return invalid_argument();
         }
 
-        let device = match P::create_device(type_id, ordinal) {
-            Ok(device) => device,
-            Err(error) => return error.into_status(),
+        let ordinal = match u32::try_from(ordinal) {
+            Ok(ordinal) => ordinal,
+            Err(_) => return invalid_argument(),
         };
+        let device = P::Device::from_id(DeviceId::new(type_id, ordinal));
         let handle = state::<P>().insert_device(device);
 
         unsafe {
@@ -315,14 +256,14 @@ unsafe extern "C" fn create_device<P: FloatTensorPlugin>(
     })
 }
 
-unsafe extern "C" fn release_device<P: FloatTensorPlugin>(device: DeviceHandle) -> PluginStatus {
+unsafe extern "C" fn release_device<P: Backend>(device: DeviceHandle) -> PluginStatus {
     with_boundary(|| {
         state::<P>().release_device(device);
         ok()
     })
 }
 
-unsafe extern "C" fn tensor_from_f32_data<P: FloatTensorPlugin>(
+unsafe extern "C" fn tensor_from_f32_data<P: Backend>(
     device: DeviceHandle,
     shape: TensorShapeRef,
     data: F32SliceRef,
@@ -346,10 +287,7 @@ unsafe extern "C" fn tensor_from_f32_data<P: FloatTensorPlugin>(
             Err(status) => return status,
         };
 
-        let tensor = match P::tensor_from_f32_data(&device_state, &shape, &values) {
-            Ok(tensor) => tensor,
-            Err(error) => return error.into_status(),
-        };
+        let tensor = P::float_from_data(TensorData::new(values, shape), &device_state);
         let handle = state::<P>().insert_tensor(device, tensor);
 
         unsafe {
@@ -359,7 +297,7 @@ unsafe extern "C" fn tensor_from_f32_data<P: FloatTensorPlugin>(
     })
 }
 
-unsafe extern "C" fn tensor_into_f32_data<P: FloatTensorPlugin>(
+unsafe extern "C" fn tensor_into_f32_data<P: Backend>(
     tensor: TensorHandle,
     out_data: *mut OwnedF32Buffer,
 ) -> PluginStatus {
@@ -372,9 +310,13 @@ unsafe extern "C" fn tensor_into_f32_data<P: FloatTensorPlugin>(
             Ok(state) => state,
             Err(status) => return status,
         };
-        let mut values = match P::tensor_into_f32_data(&tensor_state.tensor) {
+        let data = match burn_backend::read_sync(P::float_into_data(tensor_state.tensor)) {
+            Ok(data) => data,
+            Err(_) => return execution_error(),
+        };
+        let mut values = match data.into_vec::<f32>() {
             Ok(values) => values,
-            Err(error) => return error.into_status(),
+            Err(_) => return execution_error(),
         };
         let buffer = OwnedF32Buffer {
             ptr: values.as_mut_ptr(),
@@ -389,7 +331,7 @@ unsafe extern "C" fn tensor_into_f32_data<P: FloatTensorPlugin>(
     })
 }
 
-unsafe extern "C" fn tensor_shape<P: FloatTensorPlugin>(
+unsafe extern "C" fn tensor_shape<P: Backend>(
     tensor: TensorHandle,
     out_shape: *mut OwnedUsizeBuffer,
 ) -> PluginStatus {
@@ -402,10 +344,7 @@ unsafe extern "C" fn tensor_shape<P: FloatTensorPlugin>(
             Ok(state) => state,
             Err(status) => return status,
         };
-        let mut dims = match P::tensor_shape(&tensor_state.tensor) {
-            Ok(dims) => dims,
-            Err(error) => return error.into_status(),
-        };
+        let mut dims = tensor_state.tensor.shape().as_slice().to_vec();
         let buffer = OwnedUsizeBuffer {
             ptr: dims.as_mut_ptr(),
             len: dims.len(),
@@ -419,8 +358,7 @@ unsafe extern "C" fn tensor_shape<P: FloatTensorPlugin>(
     })
 }
 
-unsafe extern "C" fn tensor_binary<P: FloatTensorPlugin>(
-    op: TensorBinaryOp,
+unsafe extern "C" fn tensor_add<P: Backend>(
     lhs: TensorHandle,
     rhs: TensorHandle,
     out_tensor: *mut TensorHandle,
@@ -443,15 +381,7 @@ unsafe extern "C" fn tensor_binary<P: FloatTensorPlugin>(
             return invalid_argument();
         }
 
-        let device = match state::<P>().lookup_device(DeviceHandle(lhs_state.device_handle)) {
-            Ok(device) => device,
-            Err(status) => return status,
-        };
-
-        let out = match P::tensor_binary(op, &device, &lhs_state.tensor, &rhs_state.tensor) {
-            Ok(out) => out,
-            Err(error) => return error.into_status(),
-        };
+        let out = P::float_add(lhs_state.tensor, rhs_state.tensor);
         let handle = state::<P>().insert_tensor(DeviceHandle(lhs_state.device_handle), out);
 
         unsafe {
@@ -461,7 +391,7 @@ unsafe extern "C" fn tensor_binary<P: FloatTensorPlugin>(
     })
 }
 
-unsafe extern "C" fn release_tensor<P: FloatTensorPlugin>(tensor: TensorHandle) -> PluginStatus {
+unsafe extern "C" fn release_tensor<P: Backend>(tensor: TensorHandle) -> PluginStatus {
     with_boundary(|| {
         state::<P>().release_tensor(tensor);
         ok()
@@ -490,19 +420,19 @@ unsafe extern "C" fn release_usize_buffer(buffer: OwnedUsizeBuffer) -> PluginSta
     })
 }
 
-/// Builds the metadata table for a trait-backed plugin implementation.
-pub const fn backend_plugin_v1<P: FloatTensorPlugin>() -> BackendPluginV1 {
+/// Builds the metadata table for a backend-backed plugin implementation.
+pub const fn backend_plugin_v1<P: Backend>(backend_name: BackendNameFn) -> BackendPluginV1 {
     BackendPluginV1 {
         abi_version: BACKEND_PLUGIN_ABI_VERSION,
-        backend_name: backend_name::<P>,
+        backend_name,
         seed: seed::<P>,
         sync: sync::<P>,
         device_count: device_count::<P>,
     }
 }
 
-/// Builds the tensor operation table for a trait-backed plugin implementation.
-pub const fn backend_tensor_ops_v1<P: FloatTensorPlugin>() -> BackendTensorOpsV1 {
+/// Builds the tensor operation table for a backend-backed plugin implementation.
+pub const fn backend_tensor_ops_v1<P: Backend>() -> BackendTensorOpsV1 {
     BackendTensorOpsV1 {
         abi_version: BACKEND_TENSOR_OPS_ABI_VERSION,
         create_device: create_device::<P>,
@@ -510,17 +440,17 @@ pub const fn backend_tensor_ops_v1<P: FloatTensorPlugin>() -> BackendTensorOpsV1
         tensor_from_f32_data: tensor_from_f32_data::<P>,
         tensor_into_f32_data: tensor_into_f32_data::<P>,
         tensor_shape: tensor_shape::<P>,
-        tensor_binary: tensor_binary::<P>,
+        tensor_add: tensor_add::<P>,
         release_tensor: release_tensor::<P>,
         release_f32_buffer,
         release_usize_buffer,
     }
 }
 
-/// Clears the adapter state for a plugin implementation.
+/// Clears the adapter state for a backend implementation.
 ///
 /// This is primarily intended for tests.
 #[doc(hidden)]
-pub fn reset_state<P: FloatTensorPlugin>() {
+pub fn reset_state<P: Backend>() {
     state::<P>().clear();
 }

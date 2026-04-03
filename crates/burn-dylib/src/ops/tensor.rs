@@ -7,26 +7,14 @@ use burn_backend::tensor::{BoolTensor, Device, FloatTensor, IntTensor};
 use burn_backend::{
     BoolDType, Distribution, ExecutionError, FloatDType, IntDType, Scalar, Shape, Slice, TensorData,
 };
-use burn_dylib::TensorBinaryOp;
 
 use super::super::backend::Dylib;
 use super::super::runtime;
 use super::unsupported_op;
 
-fn run_float_binary<E>(
-    lhs: FloatTensor<Dylib<E>>,
-    rhs: FloatTensor<Dylib<E>>,
-    op: TensorBinaryOp,
-) -> FloatTensor<Dylib<E>>
-where
-    E: Send + Sync + 'static,
-{
-    runtime::tensor_binary(lhs, rhs, op).unwrap_or_else(|err| panic!("{err}"))
-}
-
 impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
     fn float_from_data(data: TensorData, device: &Device<Self>) -> FloatTensor<Self> {
-        runtime::tensor_from_data(data, device).unwrap_or_else(|err| panic!("{err}"))
+        runtime::float_from_data(data, device).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_random(
@@ -41,7 +29,7 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
     fn float_into_data(
         tensor: FloatTensor<Self>,
     ) -> impl Future<Output = Result<TensorData, ExecutionError>> + Send {
-        core::future::ready(runtime::tensor_into_data(tensor).map_err(runtime::to_execution_error))
+        core::future::ready(runtime::float_into_data(tensor).map_err(runtime::to_execution_error))
     }
 
     fn float_device(tensor: &FloatTensor<Self>) -> Device<Self> {
@@ -49,7 +37,7 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
     }
 
     fn float_to_device(tensor: FloatTensor<Self>, device: &Device<Self>) -> FloatTensor<Self> {
-        runtime::tensor_to_device(tensor, device).unwrap_or_else(|err| panic!("{err}"))
+        runtime::float_to_device(tensor, device).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_into_int(tensor: FloatTensor<Self>, out_dtype: IntDType) -> IntTensor<Self> {
@@ -64,7 +52,7 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
     }
 
     fn float_add(lhs: FloatTensor<Self>, rhs: FloatTensor<Self>) -> FloatTensor<Self> {
-        run_float_binary::<E>(lhs, rhs, TensorBinaryOp::Add)
+        runtime::float_add(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_add_scalar(lhs: FloatTensor<Self>, rhs: Scalar) -> FloatTensor<Self> {
@@ -104,7 +92,8 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
     }
 
     fn float_matmul(lhs: FloatTensor<Self>, rhs: FloatTensor<Self>) -> FloatTensor<Self> {
-        run_float_binary::<E>(lhs, rhs, TensorBinaryOp::Matmul)
+        let _ = (lhs, rhs);
+        unsupported_op("float_matmul");
     }
 
     fn float_cross(

@@ -20,6 +20,7 @@ std = ["dep:libloading"]
 
 [dependencies]
 libloading = { workspace = true, optional = true }
+burn-backend = { path = "../burn-backend", version = "=0.21.0-pre.2", default-features = false }
 
 [package.metadata.docs.rs]
 features = ["std"]

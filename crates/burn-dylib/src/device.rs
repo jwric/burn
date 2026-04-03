@@ -1,5 +1,3 @@
-#![cfg(feature = "dylib")]
-
 use burn_backend::DeviceId;
 
 use super::runtime::{self, DeviceSnapshot, DylibError};
@@ -78,15 +76,3 @@ impl burn_backend::Device for DylibDevice {
 }
 
 impl burn_backend::DeviceOps for DylibDevice {}
-
-pub(crate) fn create_device_from_path(
-    path: impl AsRef<std::path::Path>,
-    backend_type_id: u16,
-    ordinal: usize,
-) -> Result<DylibDevice, DylibError> {
-    runtime::create_device_from_path(path, backend_type_id, ordinal)
-}
-
-pub(crate) fn device_from_registry(index_id: u32) -> Result<DylibDevice, DylibError> {
-    runtime::device_from_registry(index_id)
-}

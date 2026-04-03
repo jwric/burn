@@ -3,25 +3,20 @@
 //!
 //! The current plugin ABI can represent child backends that are instantiable from
 //! `type_id + ordinal`. That includes built-in backends like `ndarray`, `cuda`,
-//! `wgpu`, and `tch`. Nested `dylib` children are rejected for now because they
+//! `wgpu`, and `tch`. Nested `dylib` children are not instantiable because they
 //! require backend-specific device descriptors such as a child plugin path.
 //!
 //! Autodiff metadata is not preserved across the plugin boundary; exported tensor
 //! ops use the eager `Dispatch` backend surface.
 
-use burn_backend::ops::FloatTensorOps;
-use burn_backend::{Backend, Device as BurnDevice, DeviceId, Shape, TensorData, TensorMetadata};
-use burn_dylib::adapter::{FloatTensorPlugin, PluginError, PluginMetadata, PluginResult};
-use burn_dylib::{BackendPluginV1, BackendTensorOpsV1, TensorBinaryOp};
+use burn_dylib::{BackendPluginV1, BackendTensorOpsV1};
 
-#[cfg(feature = "dylib")]
-use crate::BackendId;
-use crate::{Dispatch, DispatchDevice, DispatchTensor};
+use crate::Dispatch;
+
+#[cfg(test)]
+use crate::DispatchDevice;
 
 const NAME: &[u8] = b"dispatch\0";
-const ERR_EXECUTION: &[u8] = b"dispatch execution failed\0";
-const ERR_UNSUPPORTED_NESTED_DYLIB: &[u8] =
-    b"nested dylib devices require a backend-specific device descriptor; the current ABI only supports type_id + ordinal\0";
 
 /// Stable backend ids understood by the dispatch plugin ABI.
 ///
@@ -69,114 +64,16 @@ impl PluginBackendId {
     }
 }
 
-/// Trait-backed dispatch plugin implementation.
-pub struct DispatchPlugin;
-
 /// Static plugin descriptor for exporting the dispatch backend as a dylib plugin.
 pub static DISPATCH_PLUGIN_V1: BackendPluginV1 =
-    burn_dylib::adapter::backend_plugin_v1::<DispatchPlugin>();
+    burn_dylib::adapter::backend_plugin_v1::<Dispatch>(backend_name);
 
 /// Static tensor-op descriptor for exporting the dispatch backend as a dylib plugin.
 pub static DISPATCH_TENSOR_OPS_V1: BackendTensorOpsV1 =
-    burn_dylib::adapter::backend_tensor_ops_v1::<DispatchPlugin>();
+    burn_dylib::adapter::backend_tensor_ops_v1::<Dispatch>();
 
-fn execution_failed() -> PluginError {
-    PluginError::failed(ERR_EXECUTION)
-}
-
-#[cfg(feature = "dylib")]
-fn is_nested_dylib(type_id: u16) -> bool {
-    matches!(DispatchDevice::decode_type_id(type_id).0, BackendId::Dylib)
-}
-
-#[cfg(not(feature = "dylib"))]
-fn is_nested_dylib(_type_id: u16) -> bool {
-    false
-}
-
-impl PluginMetadata for DispatchPlugin {
-    type Device = DispatchDevice;
-
-    fn backend_name() -> &'static [u8] {
-        NAME
-    }
-
-    fn seed(seed: u64, devices: &[Self::Device]) -> PluginResult<()> {
-        for device in devices {
-            Dispatch::seed(device, seed);
-        }
-        Ok(())
-    }
-
-    fn sync(devices: &[Self::Device]) -> PluginResult<()> {
-        for device in devices {
-            Dispatch::sync(device).map_err(|_| execution_failed())?;
-        }
-        Ok(())
-    }
-
-    fn device_count(type_id: u16) -> usize {
-        if is_nested_dylib(type_id) {
-            return 0;
-        }
-
-        Dispatch::device_count(type_id)
-    }
-
-    fn create_device(type_id: u16, ordinal: usize) -> PluginResult<Self::Device> {
-        if is_nested_dylib(type_id) {
-            return Err(PluginError::unsupported(ERR_UNSUPPORTED_NESTED_DYLIB));
-        }
-
-        let ordinal = u32::try_from(ordinal)
-            .map_err(|_| PluginError::invalid_argument(b"invalid argument\0"))?;
-
-        Ok(DispatchDevice::from_id(DeviceId::new(type_id, ordinal)))
-    }
-}
-
-impl FloatTensorPlugin for DispatchPlugin {
-    type FloatTensor = DispatchTensor;
-
-    fn tensor_from_f32_data(
-        device: &Self::Device,
-        shape: &[usize],
-        data: &[f32],
-    ) -> PluginResult<Self::FloatTensor> {
-        Ok(<Dispatch as FloatTensorOps<Dispatch>>::float_from_data(
-            TensorData::new(data.to_vec(), Shape::new_raw(shape.to_vec().into())),
-            device,
-        ))
-    }
-
-    fn tensor_into_f32_data(tensor: &Self::FloatTensor) -> PluginResult<Vec<f32>> {
-        let data = burn_backend::read_sync(
-            <Dispatch as FloatTensorOps<Dispatch>>::float_into_data(tensor.clone()),
-        )
-        .map_err(|_| execution_failed())?;
-
-        data.into_vec::<f32>().map_err(|_| execution_failed())
-    }
-
-    fn tensor_shape(tensor: &Self::FloatTensor) -> PluginResult<Vec<usize>> {
-        Ok(tensor.shape().as_slice().to_vec())
-    }
-
-    fn tensor_binary(
-        op: TensorBinaryOp,
-        _device: &Self::Device,
-        lhs: &Self::FloatTensor,
-        rhs: &Self::FloatTensor,
-    ) -> PluginResult<Self::FloatTensor> {
-        Ok(match op {
-            TensorBinaryOp::Add => {
-                <Dispatch as FloatTensorOps<Dispatch>>::float_add(lhs.clone(), rhs.clone())
-            }
-            TensorBinaryOp::Matmul => {
-                <Dispatch as FloatTensorOps<Dispatch>>::float_matmul(lhs.clone(), rhs.clone())
-            }
-        })
-    }
+unsafe extern "C" fn backend_name() -> *const core::ffi::c_char {
+    NAME.as_ptr().cast()
 }
 
 /// Export the dispatch backend plugin symbols from a final `cdylib` crate.
@@ -202,7 +99,7 @@ mod tests {
     use super::*;
 
     fn clear_state() {
-        burn_dylib::adapter::reset_state::<DispatchPlugin>();
+        burn_dylib::adapter::reset_state::<Dispatch>();
     }
 
     fn status_message(status: PluginStatus) -> String {
@@ -294,9 +191,7 @@ mod tests {
         let rhs = create_test_tensor(device, &[2, 2], &[5.0, 6.0, 7.0, 8.0]);
 
         let mut add = TensorHandle::INVALID;
-        let status = unsafe {
-            (DISPATCH_TENSOR_OPS_V1.tensor_binary)(TensorBinaryOp::Add, lhs, rhs, &mut add)
-        };
+        let status = unsafe { (DISPATCH_TENSOR_OPS_V1.tensor_add)(lhs, rhs, &mut add) };
         assert_eq!(
             status.code,
             PluginStatusCode::Ok,
@@ -304,21 +199,6 @@ mod tests {
             status_message(status)
         );
         assert_eq!(read_tensor(add), vec![6.0, 8.0, 10.0, 12.0]);
-
-        let lhs = create_test_tensor(device, &[2, 2], &[1.0, 2.0, 3.0, 4.0]);
-        let rhs = create_test_tensor(device, &[2, 2], &[2.0, 0.0, 1.0, 2.0]);
-
-        let mut matmul = TensorHandle::INVALID;
-        let status = unsafe {
-            (DISPATCH_TENSOR_OPS_V1.tensor_binary)(TensorBinaryOp::Matmul, lhs, rhs, &mut matmul)
-        };
-        assert_eq!(
-            status.code,
-            PluginStatusCode::Ok,
-            "{:?}",
-            status_message(status)
-        );
-        assert_eq!(read_tensor(matmul), vec![4.0, 4.0, 10.0, 8.0]);
     }
 
     #[test]
@@ -331,10 +211,6 @@ mod tests {
             (DISPATCH_TENSOR_OPS_V1.create_device)(PluginBackendId::Dylib.encode(0), 0, &mut device)
         };
 
-        assert_eq!(status.code, PluginStatusCode::Unsupported);
-        assert!(
-            status_message(status)
-                .contains("nested dylib devices require a backend-specific device descriptor")
-        );
+        assert_eq!(status.code, PluginStatusCode::InvalidArgument);
     }
 }

@@ -242,7 +242,7 @@ impl DispatchDevice {
         backend_type_id: u16,
         ordinal: usize,
     ) -> Result<DispatchDevice, DylibError> {
-        let device = crate::dynamic::create_device_from_path(path, backend_type_id, ordinal)?;
+        let device = burn_dylib::create_device_from_path(path, backend_type_id, ordinal)?;
         Ok(DispatchDevice::Dylib(device))
     }
 
@@ -379,7 +379,7 @@ impl burn_backend::Device for DispatchDevice {
             BackendId::LibTorch => Self::LibTorch(LibTorchDevice::from_id(device_id)),
             #[cfg(feature = "dylib")]
             BackendId::Dylib => Self::Dylib(
-                crate::dynamic::device_from_registry(device_id.index_id)
+                burn_dylib::device_from_registry(device_id.index_id)
                     .unwrap_or_else(|err| panic!("{err}")),
             ),
         }

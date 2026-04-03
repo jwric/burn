@@ -6,8 +6,8 @@
 //!
 //! This crate provides two layers:
 //! - A versioned metadata ABI (`BackendPluginV1`) for backend plugins.
-//! - A versioned tensor/device operation ABI (`BackendTensorOpsV1`) organized by operation
-//!   families such as binary tensor ops.
+//! - A versioned tensor/device operation ABI (`BackendTensorOpsV1`) for device and tensor
+//!   operations such as tensor creation, reads, and addition.
 //! - A runtime loader (`loader`) to load both tables from a shared library.
 //!
 //! # Design Goal
@@ -17,11 +17,23 @@
 
 use core::ffi::c_char;
 
-/// Trait-backed helpers for implementing backend plugins without hand-writing
+/// Backend-backed helpers for implementing backend plugins without hand-writing
 /// the whole C ABI shim.
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod adapter;
+
+mod backend;
+mod device;
+mod ops;
+mod runtime;
+mod tensor;
+
+pub use backend::Dylib;
+pub use device::DylibDevice;
+pub use runtime::DylibError;
+
+pub use runtime::{create_device_from_path, device_from_registry};
 
 /// Symbol name that backend plugins must export.
 pub const BACKEND_PLUGIN_SYMBOL: &[u8] = b"burn_backend_plugin_v1\0";
@@ -209,25 +221,12 @@ pub type TensorIntoF32DataFn =
 pub type TensorShapeFn =
     unsafe extern "C" fn(tensor: TensorHandle, out_shape: *mut OwnedUsizeBuffer) -> PluginStatus;
 
-/// Binary tensor operation dispatcher signature.
-pub type TensorBinaryFn = unsafe extern "C" fn(
-    op: TensorBinaryOp,
+/// Tensor addition operation.
+pub type TensorAddFn = unsafe extern "C" fn(
     lhs: TensorHandle,
     rhs: TensorHandle,
     out_tensor: *mut TensorHandle,
 ) -> PluginStatus;
-
-/// Supported binary tensor operations in the plugin ABI.
-///
-/// The discriminants are part of the ABI and must remain stable.
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TensorBinaryOp {
-    /// Computes `lhs + rhs`.
-    Add = 0,
-    /// Computes `lhs.matmul(rhs)`.
-    Matmul = 1,
-}
 
 /// Releases a tensor handle.
 pub type TensorReleaseFn = unsafe extern "C" fn(tensor: TensorHandle) -> PluginStatus;
@@ -273,8 +272,8 @@ pub struct BackendTensorOpsV1 {
     pub tensor_into_f32_data: TensorIntoF32DataFn,
     /// Returns the tensor shape.
     pub tensor_shape: TensorShapeFn,
-    /// Dispatches binary tensor operations such as add and matmul.
-    pub tensor_binary: TensorBinaryFn,
+    /// Dispatches tensor addition.
+    pub tensor_add: TensorAddFn,
     /// Releases a tensor handle.
     pub release_tensor: TensorReleaseFn,
     /// Releases a plugin-allocated f32 buffer.
@@ -335,8 +334,7 @@ macro_rules! export_backend_plugin_v1 {
 ///
 /// ```ignore
 /// use burn_dylib::{
-///     BACKEND_TENSOR_OPS_ABI_VERSION, BackendTensorOpsV1, TensorBinaryOp,
-///     export_backend_tensor_ops_v1,
+///     BACKEND_TENSOR_OPS_ABI_VERSION, BackendTensorOpsV1, export_backend_tensor_ops_v1,
 /// };
 ///
 /// unsafe extern "C" fn create_device(
@@ -376,8 +374,7 @@ macro_rules! export_backend_plugin_v1 {
 ///     burn_dylib::PluginStatus::ok()
 /// }
 ///
-/// unsafe extern "C" fn tensor_binary(
-///     _op: TensorBinaryOp,
+/// unsafe extern "C" fn tensor_add(
 ///     _lhs: burn_dylib::TensorHandle,
 ///     _rhs: burn_dylib::TensorHandle,
 ///     _out_tensor: *mut burn_dylib::TensorHandle,
@@ -410,7 +407,7 @@ macro_rules! export_backend_plugin_v1 {
 ///     tensor_from_f32_data,
 ///     tensor_into_f32_data,
 ///     tensor_shape,
-///     tensor_binary,
+///     tensor_add,
 ///     release_tensor,
 ///     release_f32_buffer,
 ///     release_usize_buffer,
@@ -428,77 +425,28 @@ macro_rules! export_backend_tensor_ops_v1 {
     };
 }
 
-/// Export a trait-backed plugin implementation.
+/// Export a backend plugin implementation.
 ///
-/// The plugin type must implement [`adapter::FloatTensorPlugin`].
+/// The backend type must implement [`burn_backend::Backend`].
 ///
 /// # Example
 ///
 /// ```ignore
-/// struct MyPlugin;
-///
-/// impl burn_dylib::adapter::PluginMetadata for MyPlugin {
-///     type Device = ();
-///
-///     fn backend_name() -> &'static [u8] {
-///         b"my-backend\0"
-///     }
-///
-///     fn device_count(_type_id: u16) -> usize {
-///         1
-///     }
-///
-///     fn create_device(
-///         _type_id: u16,
-///         _ordinal: usize,
-///     ) -> burn_dylib::adapter::PluginResult<Self::Device> {
-///         Ok(())
-///     }
-/// }
-///
-/// impl burn_dylib::adapter::FloatTensorPlugin for MyPlugin {
-///     type FloatTensor = ();
-///
-///     fn tensor_from_f32_data(
-///         _device: &Self::Device,
-///         _shape: &[usize],
-///         _data: &[f32],
-///     ) -> burn_dylib::adapter::PluginResult<Self::FloatTensor> {
-///         Ok(())
-///     }
-///
-///     fn tensor_into_f32_data(
-///         _tensor: &Self::FloatTensor,
-///     ) -> burn_dylib::adapter::PluginResult<Vec<f32>> {
-///         Ok(Vec::new())
-///     }
-///
-///     fn tensor_shape(
-///         _tensor: &Self::FloatTensor,
-///     ) -> burn_dylib::adapter::PluginResult<Vec<usize>> {
-///         Ok(Vec::new())
-///     }
-///
-///     fn tensor_binary(
-///         _op: burn_dylib::TensorBinaryOp,
-///         _device: &Self::Device,
-///         _lhs: &Self::FloatTensor,
-///         _rhs: &Self::FloatTensor,
-///     ) -> burn_dylib::adapter::PluginResult<Self::FloatTensor> {
-///         Ok(())
-///     }
-/// }
-///
-/// burn_dylib::export_plugin_api!(MyPlugin);
+/// burn_dylib::export_plugin_api!(MyBackend, b"my-backend\0");
 /// ```
 #[cfg(feature = "std")]
 #[macro_export]
 macro_rules! export_plugin_api {
-    ($plugin:path) => {
+    ($backend:path, $name:expr) => {
+        #[doc(hidden)]
+        unsafe extern "C" fn __burn_dylib_backend_name() -> *const core::ffi::c_char {
+            $name.as_ptr().cast()
+        }
+
         static BURN_DYLIB_PLUGIN_V1: $crate::BackendPluginV1 =
-            $crate::adapter::backend_plugin_v1::<$plugin>();
+            $crate::adapter::backend_plugin_v1::<$backend>(__burn_dylib_backend_name);
         static BURN_DYLIB_TENSOR_OPS_V1: $crate::BackendTensorOpsV1 =
-            $crate::adapter::backend_tensor_ops_v1::<$plugin>();
+            $crate::adapter::backend_tensor_ops_v1::<$backend>();
 
         $crate::export_backend_plugin_v1!(BURN_DYLIB_PLUGIN_V1);
         $crate::export_backend_tensor_ops_v1!(BURN_DYLIB_TENSOR_OPS_V1);
@@ -513,8 +461,7 @@ pub mod loader {
         BACKEND_PLUGIN_ABI_VERSION, BACKEND_PLUGIN_SYMBOL, BACKEND_TENSOR_OPS_ABI_VERSION,
         BACKEND_TENSOR_OPS_SYMBOL, BackendPluginEntrypoint, BackendPluginV1,
         BackendTensorOpsEntrypoint, BackendTensorOpsV1, DeviceHandle, F32SliceRef, OwnedF32Buffer,
-        OwnedUsizeBuffer, PluginStatus, PluginStatusCode, TensorBinaryOp, TensorHandle,
-        TensorShapeRef,
+        OwnedUsizeBuffer, PluginStatus, PluginStatusCode, TensorHandle, TensorShapeRef,
     };
     use core::ffi::c_char;
     use libloading::{Library, Symbol};
@@ -800,14 +747,18 @@ pub mod loader {
             Ok(shape)
         }
 
-        /// Computes a binary tensor operation selected at runtime.
-        pub fn tensor_binary(
+        pub fn tensor_add(
             &self,
-            op: TensorBinaryOp,
             lhs: TensorHandle,
             rhs: TensorHandle,
         ) -> Result<TensorHandle, PluginCallError> {
-            self.tensor_binary_op(op, lhs, rhs)
+            let mut out = TensorHandle::INVALID;
+            let status = unsafe { (self.tensor_ops().tensor_add)(lhs, rhs, &mut out) };
+            check_status(status)?;
+            if !out.is_valid() {
+                return Err(PluginCallError::InvalidHandle("tensor"));
+            }
+            Ok(out)
         }
 
         /// Releases a tensor handle.
@@ -836,21 +787,6 @@ pub mod loader {
         fn release_usize_buffer(&self, buffer: OwnedUsizeBuffer) -> Result<(), PluginCallError> {
             let status = unsafe { (self.tensor_ops().release_usize_buffer)(buffer) };
             check_status(status)
-        }
-
-        fn tensor_binary_op(
-            &self,
-            op: TensorBinaryOp,
-            lhs: TensorHandle,
-            rhs: TensorHandle,
-        ) -> Result<TensorHandle, PluginCallError> {
-            let mut out = TensorHandle::INVALID;
-            let status = unsafe { (self.tensor_ops().tensor_binary)(op, lhs, rhs, &mut out) };
-            check_status(status)?;
-            if !out.is_valid() {
-                return Err(PluginCallError::InvalidHandle("tensor"));
-            }
-            Ok(out)
         }
 
         /// Returns true while the plugin library is loaded.
