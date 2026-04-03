@@ -10,7 +10,6 @@ use burn_backend::{
 
 use super::super::backend::Dylib;
 use super::super::runtime;
-use super::unsupported_op;
 
 impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
     fn float_from_data(data: TensorData, device: &Device<Self>) -> FloatTensor<Self> {
@@ -23,7 +22,8 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         device: &Device<Self>,
         dtype: FloatDType,
     ) -> FloatTensor<Self> {
-        unsupported_op("float_random");
+        runtime::float_tensor_random(shape, distribution, device, dtype)
+            .unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_into_data(
@@ -43,14 +43,11 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
     }
 
     fn float_into_int(tensor: FloatTensor<Self>, out_dtype: IntDType) -> IntTensor<Self> {
-        unsupported_op("float_into_int");
+        runtime::float_tensor_into_int(tensor, out_dtype).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_empty(shape: Shape, device: &Device<Self>, dtype: FloatDType) -> FloatTensor<Self> {
-        if dtype != FloatDType::F32 {
-            unsupported_op("float_empty_non_f32");
-        }
-        Self::float_from_data(TensorData::zeros::<f32, _>(shape), device)
+        runtime::float_tensor_empty(shape, device, dtype).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_add(lhs: FloatTensor<Self>, rhs: FloatTensor<Self>) -> FloatTensor<Self> {
@@ -58,44 +55,43 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
     }
 
     fn float_add_scalar(lhs: FloatTensor<Self>, rhs: Scalar) -> FloatTensor<Self> {
-        unsupported_op("float_add_scalar");
+        runtime::float_tensor_add_scalar(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_sub(lhs: FloatTensor<Self>, rhs: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_sub");
+        runtime::float_tensor_sub(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_sub_scalar(lhs: FloatTensor<Self>, rhs: Scalar) -> FloatTensor<Self> {
-        unsupported_op("float_sub_scalar");
+        runtime::float_tensor_sub_scalar(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_mul(lhs: FloatTensor<Self>, rhs: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_mul");
+        runtime::float_tensor_mul(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_mul_scalar(lhs: FloatTensor<Self>, rhs: Scalar) -> FloatTensor<Self> {
-        unsupported_op("float_mul_scalar");
+        runtime::float_tensor_mul_scalar(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_div(lhs: FloatTensor<Self>, rhs: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_div");
+        runtime::float_tensor_div(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_div_scalar(lhs: FloatTensor<Self>, rhs: Scalar) -> FloatTensor<Self> {
-        unsupported_op("float_div_scalar");
+        runtime::float_tensor_div_scalar(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_remainder(lhs: FloatTensor<Self>, rhs: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_remainder");
+        runtime::float_tensor_remainder(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_remainder_scalar(lhs: FloatTensor<Self>, rhs: Scalar) -> FloatTensor<Self> {
-        unsupported_op("float_remainder_scalar");
+        runtime::float_tensor_remainder_scalar(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_matmul(lhs: FloatTensor<Self>, rhs: FloatTensor<Self>) -> FloatTensor<Self> {
-        let _ = (lhs, rhs);
-        unsupported_op("float_matmul");
+        runtime::float_tensor_matmul(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_cross(
@@ -103,27 +99,27 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         rhs: FloatTensor<Self>,
         dim: usize,
     ) -> FloatTensor<Self> {
-        unsupported_op("float_cross");
+        runtime::float_tensor_cross(lhs, rhs, dim).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_recip(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_recip");
+        runtime::float_tensor_recip(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_swap_dims(tensor: FloatTensor<Self>, dim1: usize, dim2: usize) -> FloatTensor<Self> {
-        unsupported_op("float_swap_dims");
+        runtime::float_tensor_swap_dims(tensor, dim1, dim2).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_permute(tensor: FloatTensor<Self>, axes: &[usize]) -> FloatTensor<Self> {
-        unsupported_op("float_permute");
+        runtime::float_tensor_permute(tensor, axes).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_flip(tensor: FloatTensor<Self>, axes: &[usize]) -> FloatTensor<Self> {
-        unsupported_op("float_flip");
+        runtime::float_tensor_flip(tensor, axes).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_reshape(tensor: FloatTensor<Self>, shape: Shape) -> FloatTensor<Self> {
-        unsupported_op("float_reshape");
+        runtime::float_tensor_reshape(tensor, shape).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_gather(
@@ -131,7 +127,7 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         tensor: FloatTensor<Self>,
         indices: IntTensor<Self>,
     ) -> FloatTensor<Self> {
-        unsupported_op("float_gather");
+        runtime::float_tensor_gather(dim, tensor, indices).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_scatter_add(
@@ -140,7 +136,8 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         indices: IntTensor<Self>,
         value: FloatTensor<Self>,
     ) -> FloatTensor<Self> {
-        unsupported_op("float_scatter_add");
+        runtime::float_tensor_scatter_add(dim, tensor, indices, value)
+            .unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_select(
@@ -148,7 +145,7 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         dim: usize,
         indices: IntTensor<Self>,
     ) -> FloatTensor<Self> {
-        unsupported_op("float_select");
+        runtime::float_tensor_select(tensor, dim, indices).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_select_add(
@@ -157,11 +154,12 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         indices: IntTensor<Self>,
         value: FloatTensor<Self>,
     ) -> FloatTensor<Self> {
-        unsupported_op("float_select_add");
+        runtime::float_tensor_select_add(tensor, dim, indices, value)
+            .unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_slice(tensor: FloatTensor<Self>, slices: &[Slice]) -> FloatTensor<Self> {
-        unsupported_op("float_slice");
+        runtime::float_tensor_slice(tensor, slices).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_slice_assign(
@@ -169,7 +167,8 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         slices: &[Slice],
         value: FloatTensor<Self>,
     ) -> FloatTensor<Self> {
-        unsupported_op("float_slice_assign");
+        runtime::float_tensor_slice_assign(tensor, slices, value)
+            .unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_mask_where(
@@ -177,7 +176,7 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         mask: BoolTensor<Self>,
         value: FloatTensor<Self>,
     ) -> FloatTensor<Self> {
-        unsupported_op("float_mask_where");
+        runtime::float_tensor_mask_where(tensor, mask, value).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_mask_fill(
@@ -185,7 +184,7 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         mask: BoolTensor<Self>,
         value: Scalar,
     ) -> FloatTensor<Self> {
-        unsupported_op("float_mask_fill");
+        runtime::float_tensor_mask_fill(tensor, mask, value).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_equal(
@@ -193,7 +192,7 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         rhs: FloatTensor<Self>,
         out_dtype: BoolDType,
     ) -> BoolTensor<Self> {
-        unsupported_op("float_equal");
+        runtime::float_tensor_equal(lhs, rhs, out_dtype).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_equal_elem(
@@ -201,7 +200,7 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         rhs: Scalar,
         out_dtype: BoolDType,
     ) -> BoolTensor<Self> {
-        unsupported_op("float_equal_elem");
+        runtime::float_tensor_equal_elem(lhs, rhs, out_dtype).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_greater(
@@ -209,7 +208,7 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         rhs: FloatTensor<Self>,
         out_dtype: BoolDType,
     ) -> BoolTensor<Self> {
-        unsupported_op("float_greater");
+        runtime::float_tensor_greater(lhs, rhs, out_dtype).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_greater_elem(
@@ -217,7 +216,8 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         rhs: Scalar,
         out_dtype: BoolDType,
     ) -> BoolTensor<Self> {
-        unsupported_op("float_greater_elem");
+        runtime::float_tensor_greater_elem(lhs, rhs, out_dtype)
+            .unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_greater_equal(
@@ -225,7 +225,8 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         rhs: FloatTensor<Self>,
         out_dtype: BoolDType,
     ) -> BoolTensor<Self> {
-        unsupported_op("float_greater_equal");
+        runtime::float_tensor_greater_equal(lhs, rhs, out_dtype)
+            .unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_greater_equal_elem(
@@ -233,7 +234,8 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         rhs: Scalar,
         out_dtype: BoolDType,
     ) -> BoolTensor<Self> {
-        unsupported_op("float_greater_equal_elem");
+        runtime::float_tensor_greater_equal_elem(lhs, rhs, out_dtype)
+            .unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_lower(
@@ -241,7 +243,7 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         rhs: FloatTensor<Self>,
         out_dtype: BoolDType,
     ) -> BoolTensor<Self> {
-        unsupported_op("float_lower");
+        runtime::float_tensor_lower(lhs, rhs, out_dtype).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_lower_elem(
@@ -249,7 +251,7 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         rhs: Scalar,
         out_dtype: BoolDType,
     ) -> BoolTensor<Self> {
-        unsupported_op("float_lower_elem");
+        runtime::float_tensor_lower_elem(lhs, rhs, out_dtype).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_lower_equal(
@@ -257,7 +259,7 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         rhs: FloatTensor<Self>,
         out_dtype: BoolDType,
     ) -> BoolTensor<Self> {
-        unsupported_op("float_lower_equal");
+        runtime::float_tensor_lower_equal(lhs, rhs, out_dtype).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_lower_equal_elem(
@@ -265,151 +267,152 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         rhs: Scalar,
         out_dtype: BoolDType,
     ) -> BoolTensor<Self> {
-        unsupported_op("float_lower_equal_elem");
+        runtime::float_tensor_lower_equal_elem(lhs, rhs, out_dtype)
+            .unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_sum(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_sum");
+        runtime::float_tensor_sum(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_sum_dim(tensor: FloatTensor<Self>, dim: usize) -> FloatTensor<Self> {
-        unsupported_op("float_sum_dim");
+        runtime::float_tensor_sum_dim(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_mean_dim(tensor: FloatTensor<Self>, dim: usize) -> FloatTensor<Self> {
-        unsupported_op("float_mean_dim");
+        runtime::float_tensor_mean_dim(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_cumsum(tensor: FloatTensor<Self>, dim: usize) -> FloatTensor<Self> {
-        unsupported_op("float_cumsum");
+        runtime::float_tensor_cumsum(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_cumprod(tensor: FloatTensor<Self>, dim: usize) -> FloatTensor<Self> {
-        unsupported_op("float_cumprod");
+        runtime::float_tensor_cumprod(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_cummin(tensor: FloatTensor<Self>, dim: usize) -> FloatTensor<Self> {
-        unsupported_op("float_cummin");
+        runtime::float_tensor_cummin(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_cummax(tensor: FloatTensor<Self>, dim: usize) -> FloatTensor<Self> {
-        unsupported_op("float_cummax");
+        runtime::float_tensor_cummax(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_cast(tensor: FloatTensor<Self>, dtype: FloatDType) -> FloatTensor<Self> {
-        unsupported_op("float_cast");
+        runtime::float_tensor_cast(tensor, dtype).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_exp(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_exp");
+        runtime::float_tensor_exp(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_log(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_log");
+        runtime::float_tensor_log(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_log1p(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_log1p");
+        runtime::float_tensor_log1p(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_powf(lhs: FloatTensor<Self>, rhs: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_powf");
+        runtime::float_tensor_powf(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_powf_scalar_impl(tensor: FloatTensor<Self>, value: Scalar) -> FloatTensor<Self> {
-        unsupported_op("float_powf_scalar_impl");
+        runtime::float_tensor_powf_scalar(tensor, value).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_sqrt(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_sqrt");
+        runtime::float_tensor_sqrt(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_abs(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_abs");
+        runtime::float_tensor_abs(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_cos(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_cos");
+        runtime::float_tensor_cos(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_sin(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_sin");
+        runtime::float_tensor_sin(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_tan(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_tan");
+        runtime::float_tensor_tan(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_cosh(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_cosh");
+        runtime::float_tensor_cosh(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_sinh(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_sinh");
+        runtime::float_tensor_sinh(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_tanh(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_tanh");
+        runtime::float_tensor_tanh(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_acos(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_acos");
+        runtime::float_tensor_acos(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_acosh(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_acosh");
+        runtime::float_tensor_acosh(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_asin(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_asin");
+        runtime::float_tensor_asin(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_asinh(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_asinh");
+        runtime::float_tensor_asinh(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_atan(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_atan");
+        runtime::float_tensor_atan(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_atanh(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_atanh");
+        runtime::float_tensor_atanh(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_atan2(lhs: FloatTensor<Self>, rhs: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_atan2");
+        runtime::float_tensor_atan2(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_round(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_round");
+        runtime::float_tensor_round(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_floor(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_floor");
+        runtime::float_tensor_floor(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_ceil(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_ceil");
+        runtime::float_tensor_ceil(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_trunc(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_trunc");
+        runtime::float_tensor_trunc(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_erf(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
-        unsupported_op("float_erf");
+        runtime::float_tensor_erf(tensor).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_argmax(tensor: FloatTensor<Self>, dim: usize, out_dtype: IntDType) -> IntTensor<Self> {
-        unsupported_op("float_argmax");
+        runtime::float_tensor_argmax(tensor, dim, out_dtype).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_argmin(tensor: FloatTensor<Self>, dim: usize, out_dtype: IntDType) -> IntTensor<Self> {
-        unsupported_op("float_argmin");
+        runtime::float_tensor_argmin(tensor, dim, out_dtype).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_expand(tensor: FloatTensor<Self>, shape: Shape) -> FloatTensor<Self> {
-        unsupported_op("float_expand");
+        runtime::float_tensor_expand(tensor, shape).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn float_unfold(
@@ -418,6 +421,6 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         size: usize,
         step: usize,
     ) -> FloatTensor<Self> {
-        unsupported_op("float_unfold");
+        runtime::float_tensor_unfold(tensor, dim, size, step).unwrap_or_else(|err| panic!("{err}"))
     }
 }
