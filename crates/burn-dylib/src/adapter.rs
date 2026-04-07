@@ -317,6 +317,7 @@ fn execution_error() -> PluginStatus {
 }
 
 fn with_boundary(f: impl FnOnce() -> PluginStatus) -> PluginStatus {
+    // catch and rethrow panics to prevent unwinding across the FFI boundary, which is undefined behavior.
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(status) => status,
         Err(_) => PluginError::failed(ERR_PANIC).into_status(),
@@ -553,6 +554,29 @@ unsafe extern "C" fn abi_backend_sync<P: Backend>() -> PluginStatus {
 
 unsafe extern "C" fn abi_backend_device_count<P: Backend>(type_id: u16) -> usize {
     catch_unwind(AssertUnwindSafe(|| P::device_count(type_id))).unwrap_or(0)
+}
+
+unsafe extern "C" fn abi_create_default_device<P: Backend>(
+    out_type_id: *mut u16,
+    out_ordinal: *mut usize,
+    out_device: *mut DeviceHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_type_id.is_null() || out_ordinal.is_null() || out_device.is_null() {
+            return invalid_argument();
+        }
+
+        let device = P::Device::default();
+        let device_id = device.to_id();
+        let handle = adapter_state::<P>().insert_device(device);
+
+        unsafe {
+            *out_type_id = device_id.type_id;
+            *out_ordinal = device_id.index_id as _;
+            *out_device = handle;
+        }
+        ok()
+    })
 }
 
 unsafe extern "C" fn abi_create_device<P: Backend>(
@@ -1070,6 +1094,8 @@ abi_float_compare_binary_fn!(abi_float_tensor_lower_equal, float_lower_equal);
 abi_float_compare_scalar_fn!(abi_float_tensor_lower_equal_elem, float_lower_equal_elem);
 abi_float_unary_fn!(abi_float_tensor_sum, float_sum);
 abi_float_dim_fn!(abi_float_tensor_sum_dim, float_sum_dim);
+abi_float_unary_fn!(abi_float_tensor_prod, float_prod);
+abi_float_dim_fn!(abi_float_tensor_prod_dim, float_prod_dim);
 abi_float_dim_fn!(abi_float_tensor_mean_dim, float_mean_dim);
 abi_float_dim_fn!(abi_float_tensor_cumsum, float_cumsum);
 abi_float_dim_fn!(abi_float_tensor_cumprod, float_cumprod);
@@ -4336,6 +4362,7 @@ pub const fn backend_plugin_v1<P: Backend>(backend_name: BackendNameFn) -> Backe
 pub const fn backend_tensor_ops_v1<P: Backend>() -> BackendTensorOpsV1 {
     BackendTensorOpsV1 {
         abi_version: BACKEND_TENSOR_OPS_ABI_VERSION,
+        create_default_device: abi_create_default_device::<P>,
         create_device: abi_create_device::<P>,
         release_device: abi_release_device::<P>,
         tensor_from_f32_data: abi_float_tensor_from_f32_data::<P>,
@@ -4382,6 +4409,8 @@ pub const fn backend_tensor_ops_v1<P: Backend>() -> BackendTensorOpsV1 {
         tensor_lower_equal_elem: abi_float_tensor_lower_equal_elem::<P>,
         tensor_sum: abi_float_tensor_sum::<P>,
         tensor_sum_dim: abi_float_tensor_sum_dim::<P>,
+        tensor_prod: abi_float_tensor_prod::<P>,
+        tensor_prod_dim: abi_float_tensor_prod_dim::<P>,
         tensor_mean_dim: abi_float_tensor_mean_dim::<P>,
         tensor_cumsum: abi_float_tensor_cumsum::<P>,
         tensor_cumprod: abi_float_tensor_cumprod::<P>,

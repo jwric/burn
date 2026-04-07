@@ -85,6 +85,8 @@ macro_rules! export_dispatch_plugin_v1 {
     };
 }
 
+export_dispatch_plugin_v1!();
+
 #[cfg(test)]
 mod tests {
     use std::ffi::CStr;

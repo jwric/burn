@@ -174,9 +174,7 @@ impl Default for DispatchDevice {
         return Self::NdArray(NdArrayDevice::default());
 
         #[cfg(feature = "dylib")]
-        panic!(
-            "DispatchDevice::default() is not available for dylib backends. Use DispatchDevice::dylib(path, type_id, ordinal)."
-        );
+        return Self::Dylib(DylibDevice::default());
     }
 }
 

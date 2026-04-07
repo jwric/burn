@@ -8,6 +8,7 @@ test-tch = "test --release --no-default-features --features tch,std"
 test-wgpu = "test --release --no-default-features --features wgpu,std,fusion"
 test-vulkan = "test --release --no-default-features --features vulkan,std,fusion"
 test-metal = "test --release --no-default-features --features metal,std,fusion"
+test-dylib = "test --release --no-default-features --features dylib,std,fusion"
 
 # Fusion disabled tests
 test-cpu-nofuse = "test --release --no-default-features --features cpu,std"

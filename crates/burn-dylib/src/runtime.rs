@@ -10,7 +10,7 @@ use burn_backend::{
 };
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
 
@@ -89,6 +89,12 @@ impl DeviceEntry {
     }
 }
 
+fn same_backend_device(lhs: DeviceSnapshot, rhs: DeviceSnapshot) -> bool {
+    lhs.runtime_id == rhs.runtime_id
+        && lhs.backend_type_id == rhs.backend_type_id
+        && lhs.ordinal == rhs.ordinal
+}
+
 struct RuntimeRegistry {
     next_runtime_id: AtomicU64,
     next_device_index: AtomicU32,
@@ -148,11 +154,45 @@ impl RuntimeRegistry {
     }
 
     fn insert_device(&self, snapshot: DeviceSnapshot) -> u32 {
+        if let Some(entry) =
+            self.devices
+                .read()
+                .expect("device lock")
+                .iter()
+                .find_map(|(registry_index, entry)| {
+                    same_backend_device(entry.snapshot(), snapshot)
+                        .then_some((*registry_index, entry))
+                })
+        {
+            entry.1.retain();
+
+            if entry.1.snapshot().handle != snapshot.handle {
+                if let Ok(runtime) = self.get_runtime(snapshot.runtime_id) {
+                    let _ = runtime.release_device(snapshot.handle);
+                }
+            }
+
+            return entry.0;
+        }
+
+        let mut devices = self.devices.write().expect("device lock");
+
+        if let Some(entry) = devices.iter().find_map(|(registry_index, entry)| {
+            same_backend_device(entry.snapshot(), snapshot).then_some((*registry_index, entry))
+        }) {
+            entry.1.retain();
+
+            if entry.1.snapshot().handle != snapshot.handle {
+                if let Ok(runtime) = self.get_runtime(snapshot.runtime_id) {
+                    let _ = runtime.release_device(snapshot.handle);
+                }
+            }
+
+            return entry.0;
+        }
+
         let registry_index = self.next_device_index.fetch_add(1, Ordering::Relaxed);
-        self.devices
-            .write()
-            .expect("device lock")
-            .insert(registry_index, Arc::new(DeviceEntry::new(snapshot)));
+        devices.insert(registry_index, Arc::new(DeviceEntry::new(snapshot)));
         registry_index
     }
 
@@ -208,6 +248,32 @@ fn normalize_path(path: &Path) -> String {
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
         .into_owned()
+}
+
+fn default_plugin_path() -> Result<PathBuf, DylibError> {
+    let exe_path = std::env::current_exe()
+        .map_err(|err| DylibError::Load(format!("Failed to resolve current executable: {err}")))?;
+    let exe_dir = exe_path.parent().ok_or_else(|| {
+        DylibError::Load(format!(
+            "Failed to resolve executable directory for {}",
+            exe_path.display()
+        ))
+    })?;
+
+    let ext = std::env::consts::DLL_EXTENSION;
+    let prefix = std::env::consts::DLL_PREFIX;
+
+    let name = "burn_dispatch";
+    let candidate = exe_dir.join(format!("{}{}.{ext}", prefix, name));
+
+    if candidate.exists() {
+        Ok(candidate)
+    } else {
+        Err(DylibError::Load(format!(
+            "Default plugin not found at expected path: {}",
+            candidate.display()
+        )))
+    }
 }
 
 fn map_load_error(err: LoadError) -> DylibError {
@@ -510,6 +576,28 @@ fn create_device_from_runtime(
     Ok(DylibDevice::from_registry_index(registry_index))
 }
 
+/// Creates a device using the plugin's default device.
+pub fn create_default_device() -> Result<DylibDevice, DylibError> {
+    let path = default_plugin_path()?;
+    let runtime_id = register_runtime(&path)?;
+    let runtime = get_runtime(runtime_id)?;
+    let (type_id, ordinal, device) = runtime.create_default_device().map_err(map_call_error)?;
+    let ordinal_u32 = u32::try_from(ordinal).map_err(|_| {
+        DylibError::InvalidInput(format!(
+            "Invalid device ordinal from plugin default device: {ordinal}"
+        ))
+    })?;
+
+    let registry_index = REGISTRY.insert_device(DeviceSnapshot {
+        runtime_id,
+        backend_type_id: type_id,
+        ordinal: ordinal_u32,
+        handle: device,
+    });
+
+    Ok(DylibDevice::from_registry_index(registry_index))
+}
+
 /// Creates a device from a shared library path, backend type id, and device ordinal.
 pub fn create_device_from_path(
     path: impl AsRef<Path>,
@@ -791,6 +879,8 @@ define_binary_same_dtype!(float_tensor_matmul, float_tensor_matmul);
 define_unary_same_dtype!(float_tensor_recip, float_tensor_recip);
 define_unary_same_dtype!(float_tensor_sum, float_tensor_sum);
 define_unary_dim_same_dtype!(float_tensor_sum_dim, float_tensor_sum_dim);
+define_unary_same_dtype!(float_tensor_prod, float_tensor_prod);
+define_unary_dim_same_dtype!(float_tensor_prod_dim, float_tensor_prod_dim);
 define_unary_dim_same_dtype!(float_tensor_mean_dim, float_tensor_mean_dim);
 define_unary_dim_same_dtype!(float_tensor_cumsum, float_tensor_cumsum);
 define_unary_dim_same_dtype!(float_tensor_cumprod, float_tensor_cumprod);
@@ -2191,4 +2281,70 @@ pub(crate) fn module_rfft(
     let real = tensor_from_output(&runtime, &signal, handles.real, signal.dtype);
     let imag = tensor_from_output(&runtime, &signal, handles.imag, signal.dtype);
     Ok((real, imag))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DeviceHandle;
+
+    #[test]
+    fn insert_device_reuses_existing_backend_device() {
+        let registry = RuntimeRegistry::new();
+        let first = DeviceSnapshot {
+            runtime_id: 7,
+            backend_type_id: 3,
+            ordinal: 0,
+            handle: DeviceHandle(11),
+        };
+        let duplicate = DeviceSnapshot {
+            handle: DeviceHandle(22),
+            ..first
+        };
+
+        let first_index = registry.insert_device(first);
+        let duplicate_index = registry.insert_device(duplicate);
+
+        assert_eq!(first_index, duplicate_index);
+        assert_eq!(registry.devices.read().expect("device lock").len(), 1);
+        assert_eq!(
+            registry
+                .device_entry(first_index)
+                .expect("device entry")
+                .refs
+                .load(Ordering::Relaxed),
+            2
+        );
+
+        registry.release_device(first_index);
+        assert!(registry.device_entry(first_index).is_ok());
+
+        registry.release_device(first_index);
+        assert!(matches!(
+            registry.device_entry(first_index),
+            Err(DylibError::DeviceNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn insert_device_keeps_distinct_backend_devices_separate() {
+        let registry = RuntimeRegistry::new();
+        let first = DeviceSnapshot {
+            runtime_id: 7,
+            backend_type_id: 3,
+            ordinal: 0,
+            handle: DeviceHandle(11),
+        };
+        let second = DeviceSnapshot {
+            ordinal: 1,
+            handle: DeviceHandle(22),
+            ..first
+        };
+
+        let first_index = registry.insert_device(first);
+        let second_index = registry.insert_device(second);
+
+        assert_ne!(first_index, second_index);
+        assert_eq!(registry.devices.read().expect("device lock").len(), 2);
+    }
 }

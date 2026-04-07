@@ -43,7 +43,7 @@ pub use backend::Dylib;
 pub use device::DylibDevice;
 pub use runtime::DylibError;
 
-pub use runtime::{create_device_from_path, device_from_registry};
+pub use runtime::{create_default_device, create_device_from_path, device_from_registry};
 
 /// Symbol name that backend plugins must export.
 pub const BACKEND_PLUGIN_SYMBOL: &[u8] = b"burn_backend_plugin_v1\0";
@@ -55,7 +55,7 @@ pub const BACKEND_TENSOR_OPS_SYMBOL: &[u8] = b"burn_backend_tensor_ops_v1\0";
 pub const BACKEND_PLUGIN_ABI_VERSION: u32 = 1;
 
 /// Current tensor operations ABI version.
-pub const BACKEND_TENSOR_OPS_ABI_VERSION: u32 = 3;
+pub const BACKEND_TENSOR_OPS_ABI_VERSION: u32 = 4;
 
 /// Status code returned by plugin callbacks.
 #[repr(u32)]
@@ -544,6 +544,13 @@ pub struct AbiRfftOutput {
     /// Imaginary output tensor.
     pub imag: TensorHandle,
 }
+
+/// Creates a default backend device and writes its type ID, ordinal, and handle into `out_type_id`, `out_ordinal`, and `out_device`.
+pub type BackendCreateDefaultDeviceFn = unsafe extern "C" fn(
+    out_type_id: *mut u16,
+    out_ordinal: *mut usize,
+    out_device: *mut DeviceHandle,
+) -> PluginStatus;
 
 /// Creates a backend device and writes its handle into `out_device`.
 pub type BackendCreateDeviceFn = unsafe extern "C" fn(
@@ -1043,6 +1050,8 @@ pub type BackendPluginEntrypoint = unsafe extern "C" fn() -> *const BackendPlugi
 pub struct BackendTensorOpsV1 {
     /// ABI version for compatibility checks.
     pub abi_version: u32,
+    /// Creates a default backend device.
+    pub create_default_device: BackendCreateDefaultDeviceFn,
     /// Creates a backend device from `(type_id, ordinal)`.
     pub create_device: BackendCreateDeviceFn,
     /// Releases a backend device handle.
@@ -1135,6 +1144,10 @@ pub struct BackendTensorOpsV1 {
     pub tensor_sum: TensorUnaryFn,
     /// Dispatches tensor sum-dim reduction.
     pub tensor_sum_dim: TensorDimFn,
+    /// Dispatches tensor product reduction.
+    pub tensor_prod: TensorUnaryFn,
+    /// Dispatches tensor product-dim reduction.
+    pub tensor_prod_dim: TensorDimFn,
     /// Dispatches tensor mean-dim reduction.
     pub tensor_mean_dim: TensorDimFn,
     /// Dispatches tensor cumsum.
@@ -1965,6 +1978,21 @@ pub mod loader {
             unsafe { (self.api().device_count)(type_id) }
         }
 
+        /// Creates a default backend device handle.
+        pub fn create_default_device(&self) -> Result<(u16, usize, DeviceHandle), PluginCallError> {
+            let mut type_id = 0;
+            let mut ordinal = 0;
+            let mut handle = DeviceHandle::INVALID;
+            let status = unsafe {
+                (self.tensor_ops().create_default_device)(&mut type_id, &mut ordinal, &mut handle)
+            };
+            check_status(status)?;
+            if !handle.is_valid() {
+                return Err(PluginCallError::InvalidHandle("device"));
+            }
+            Ok((type_id, ordinal, handle))
+        }
+
         /// Creates a backend device handle.
         pub fn create_device(
             &self,
@@ -2313,6 +2341,8 @@ pub mod loader {
 
         loader_unary_method!(float_tensor_sum, tensor_sum);
         loader_dim_method!(float_tensor_sum_dim, tensor_sum_dim);
+        loader_unary_method!(float_tensor_prod, tensor_prod);
+        loader_dim_method!(float_tensor_prod_dim, tensor_prod_dim);
         loader_dim_method!(float_tensor_mean_dim, tensor_mean_dim);
         loader_dim_method!(float_tensor_cumsum, tensor_cumsum);
         loader_dim_method!(float_tensor_cumprod, tensor_cumprod);

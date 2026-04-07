@@ -279,6 +279,14 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         runtime::float_tensor_sum_dim(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
     }
 
+    fn float_prod(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        runtime::float_tensor_prod(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_prod_dim(tensor: FloatTensor<Self>, dim: usize) -> FloatTensor<Self> {
+        runtime::float_tensor_prod_dim(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
+    }
+
     fn float_mean_dim(tensor: FloatTensor<Self>, dim: usize) -> FloatTensor<Self> {
         runtime::float_tensor_mean_dim(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
     }

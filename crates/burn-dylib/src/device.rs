@@ -58,9 +58,7 @@ impl core::fmt::Debug for DylibDevice {
 
 impl Default for DylibDevice {
     fn default() -> Self {
-        panic!(
-            "DylibDevice::default() is not available. Use DispatchDevice::dylib(path, type_id, ordinal)."
-        )
+        runtime::create_default_device().unwrap_or_else(|err| panic!("{err}"))
     }
 }
 
