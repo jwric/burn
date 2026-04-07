@@ -55,7 +55,7 @@ pub const BACKEND_TENSOR_OPS_SYMBOL: &[u8] = b"burn_backend_tensor_ops_v1\0";
 pub const BACKEND_PLUGIN_ABI_VERSION: u32 = 1;
 
 /// Current tensor operations ABI version.
-pub const BACKEND_TENSOR_OPS_ABI_VERSION: u32 = 5;
+pub const BACKEND_TENSOR_OPS_ABI_VERSION: u32 = 6;
 
 /// Status code returned by plugin callbacks.
 #[repr(u32)]
@@ -153,6 +153,16 @@ pub struct TensorShapeRef {
     pub dims: *const usize,
     /// Number of dimensions.
     pub rank: usize,
+}
+
+/// Borrowed tensor-handle list descriptor passed from host to plugin.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TensorHandleRef {
+    /// Pointer to a contiguous list of tensor handles.
+    pub ptr: *const TensorHandle,
+    /// Number of tensor handles.
+    pub len: usize,
 }
 
 /// Borrowed f32 data slice passed from host to plugin.
@@ -522,6 +532,20 @@ pub struct AbiConvOptions2 {
     pub groups: usize,
 }
 
+/// ABI 1D convolution options.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct AbiConvOptions1 {
+    /// Stride.
+    pub stride: [usize; 1],
+    /// Padding.
+    pub padding: [usize; 1],
+    /// Dilation.
+    pub dilation: [usize; 1],
+    /// Groups.
+    pub groups: usize,
+}
+
 /// ABI 3D convolution options.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -568,6 +592,22 @@ pub struct AbiConvTransposeOptions2 {
     pub groups: usize,
 }
 
+/// ABI 1D transposed convolution options.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct AbiConvTransposeOptions1 {
+    /// Stride.
+    pub stride: [usize; 1],
+    /// Padding.
+    pub padding: [usize; 1],
+    /// Output padding.
+    pub padding_out: [usize; 1],
+    /// Dilation.
+    pub dilation: [usize; 1],
+    /// Groups.
+    pub groups: usize,
+}
+
 /// ABI 3D transposed convolution options.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -600,12 +640,44 @@ pub struct AbiAttentionModuleOptions {
     pub is_causal: u8,
 }
 
+/// ABI unfold operation options.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct AbiUnfoldOptions {
+    /// Stride.
+    pub stride: [usize; 2],
+    /// Padding.
+    pub padding: [usize; 2],
+    /// Dilation.
+    pub dilation: [usize; 2],
+}
+
 /// ABI output payload for max-pool-with-indices.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct AbiMaxPool2dWithIndices {
     /// Output values tensor.
     pub output: TensorHandle,
+    /// Output indices tensor.
+    pub indices: TensorHandle,
+}
+
+/// ABI output payload for max-pool1d-with-indices.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct AbiMaxPool1dWithIndices {
+    /// Output values tensor.
+    pub output: TensorHandle,
+    /// Output indices tensor.
+    pub indices: TensorHandle,
+}
+
+/// ABI output payload for tensor operations returning values and indices.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct AbiTensorWithIndices {
+    /// Output values tensor.
+    pub values: TensorHandle,
     /// Output indices tensor.
     pub indices: TensorHandle,
 }
@@ -920,6 +992,14 @@ pub type TensorMaskFillFn = unsafe extern "C" fn(
     out_tensor: *mut TensorHandle,
 ) -> PluginStatus;
 
+/// Tensor clamp operation with scalar min and max.
+pub type TensorClampFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    min: AbiScalar,
+    max: AbiScalar,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
 /// Tensor comparison operation.
 pub type TensorCompareFn = unsafe extern "C" fn(
     lhs: TensorHandle,
@@ -964,6 +1044,403 @@ pub type TensorUnfoldFn = unsafe extern "C" fn(
     dim: usize,
     size: usize,
     step: usize,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Float tensor full creation operation.
+pub type TensorFullFn = unsafe extern "C" fn(
+    device: DeviceHandle,
+    shape: TensorShapeRef,
+    value: AbiScalar,
+    dtype: AbiFloatDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Int tensor full creation operation.
+pub type TensorFullIntFn = unsafe extern "C" fn(
+    device: DeviceHandle,
+    shape: TensorShapeRef,
+    value: AbiScalar,
+    dtype: AbiIntDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Tensor repeat-dim operation.
+pub type TensorRepeatDimFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    dim: usize,
+    times: usize,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Tensor concatenation operation.
+pub type TensorCatFn = unsafe extern "C" fn(
+    tensors: TensorHandleRef,
+    dim: usize,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Tensor boolean reduction operation with output bool dtype.
+pub type TensorBoolReduceFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    out_dtype: AbiBoolDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Tensor boolean reduction operation along a dimension with output bool dtype.
+pub type TensorBoolReduceDimFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    dim: usize,
+    out_dtype: AbiBoolDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Tensor operation returning values and indices.
+pub type TensorWithIndicesFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    dim: usize,
+    out_dtype: AbiIntDType,
+    out_tensors: *mut AbiTensorWithIndices,
+) -> PluginStatus;
+
+/// Tensor operation returning values and indices with backend-chosen index dtype.
+pub type TensorWithIndicesNoDTypeFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    dim: usize,
+    out_tensors: *mut AbiTensorWithIndices,
+) -> PluginStatus;
+
+/// Tensor sort operation.
+pub type TensorSortFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    dim: usize,
+    descending: u8,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Tensor sort-with-indices operation.
+pub type TensorSortWithIndicesFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    dim: usize,
+    descending: u8,
+    out_dtype: AbiIntDType,
+    out_tensors: *mut AbiTensorWithIndices,
+) -> PluginStatus;
+
+/// Tensor sort-with-indices operation with backend-chosen index dtype.
+pub type TensorSortWithIndicesNoDTypeFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    dim: usize,
+    descending: u8,
+    out_tensors: *mut AbiTensorWithIndices,
+) -> PluginStatus;
+
+/// Tensor argsort operation.
+pub type TensorArgsortFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    dim: usize,
+    descending: u8,
+    out_dtype: AbiIntDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Tensor argsort operation with backend-chosen index dtype.
+pub type TensorArgsortNoDTypeFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    dim: usize,
+    descending: u8,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Bool tensor reduction operation along a dimension.
+pub type BoolTensorDimFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    dim: usize,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Int tensor arange operation.
+pub type IntTensorArangeFn = unsafe extern "C" fn(
+    start: i64,
+    end: i64,
+    device: DeviceHandle,
+    dtype: AbiIntDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Int tensor arange-step operation.
+pub type IntTensorArangeStepFn = unsafe extern "C" fn(
+    start: i64,
+    end: i64,
+    step: usize,
+    device: DeviceHandle,
+    dtype: AbiIntDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module embedding operation.
+pub type ModuleEmbeddingFn = unsafe extern "C" fn(
+    weights: TensorHandle,
+    indices: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module embedding backward operation.
+pub type ModuleEmbeddingBackwardFn = unsafe extern "C" fn(
+    weights: TensorHandle,
+    output_grad: TensorHandle,
+    indices: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module conv1d operation.
+pub type ModuleConv1dFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    weight: TensorHandle,
+    bias: TensorHandle,
+    options: AbiConvOptions1,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module conv1d input-backward operation.
+pub type ModuleConv1dXBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvOptions1,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module conv1d weight-backward operation.
+pub type ModuleConv1dWeightBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvOptions1,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module conv1d bias-backward operation.
+pub type ModuleConv1dBiasBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    bias: TensorHandle,
+    output_grad: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module conv2d input-backward operation.
+pub type ModuleConv2dXBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvOptions2,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module conv2d weight-backward operation.
+pub type ModuleConv2dWeightBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvOptions2,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module conv2d bias-backward operation.
+pub type ModuleConv2dBiasBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    bias: TensorHandle,
+    output_grad: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module conv3d input-backward operation.
+pub type ModuleConv3dXBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvOptions3,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module conv3d weight-backward operation.
+pub type ModuleConv3dWeightBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvOptions3,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module conv3d bias-backward operation.
+pub type ModuleConv3dBiasBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    bias: TensorHandle,
+    output_grad: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module transposed conv1d operation.
+pub type ModuleConvTranspose1dFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    weight: TensorHandle,
+    bias: TensorHandle,
+    options: AbiConvTransposeOptions1,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module transposed conv1d input-backward operation.
+pub type ModuleConvTranspose1dXBackwardFn = unsafe extern "C" fn(
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvTransposeOptions1,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module transposed conv1d weight-backward operation.
+pub type ModuleConvTranspose1dWeightBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvTransposeOptions1,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module transposed conv1d bias-backward operation.
+pub type ModuleConvTranspose1dBiasBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    bias: TensorHandle,
+    output_grad: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module transposed conv2d input-backward operation.
+pub type ModuleConvTranspose2dXBackwardFn = unsafe extern "C" fn(
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvTransposeOptions2,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module transposed conv2d weight-backward operation.
+pub type ModuleConvTranspose2dWeightBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvTransposeOptions2,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module transposed conv2d bias-backward operation.
+pub type ModuleConvTranspose2dBiasBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    bias: TensorHandle,
+    output_grad: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module transposed conv3d input-backward operation.
+pub type ModuleConvTranspose3dXBackwardFn = unsafe extern "C" fn(
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvTransposeOptions3,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module transposed conv3d weight-backward operation.
+pub type ModuleConvTranspose3dWeightBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvTransposeOptions3,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module transposed conv3d bias-backward operation.
+pub type ModuleConvTranspose3dBiasBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    bias: TensorHandle,
+    output_grad: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module unfold4d operation.
+pub type ModuleUnfold4dFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    kernel_size: [usize; 2],
+    options: AbiUnfoldOptions,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module avg-pool1d operation.
+pub type ModuleAvgPool1dFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    count_include_pad: u8,
+    ceil_mode: u8,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module avg-pool1d backward operation.
+pub type ModuleAvgPool1dBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    grad: TensorHandle,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    count_include_pad: u8,
+    ceil_mode: u8,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module adaptive avg-pool1d operation.
+pub type ModuleAdaptiveAvgPool1dFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    output_size: usize,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module adaptive avg-pool1d backward operation.
+pub type ModuleAdaptiveAvgPool1dBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    grad: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module max-pool1d operation.
+pub type ModuleMaxPool1dFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    dilation: usize,
+    ceil_mode: u8,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Module max-pool1d with indices operation.
+pub type ModuleMaxPool1dWithIndicesFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    dilation: usize,
+    ceil_mode: u8,
+    out_tensors: *mut AbiMaxPool1dWithIndices,
+) -> PluginStatus;
+
+/// Module max-pool1d backward operation.
+pub type ModuleMaxPool1dBackwardFn = unsafe extern "C" fn(
+    x: TensorHandle,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    dilation: usize,
+    ceil_mode: u8,
+    output_grad: TensorHandle,
+    indices: TensorHandle,
     out_tensor: *mut TensorHandle,
 ) -> PluginStatus;
 
@@ -1133,6 +1610,21 @@ pub type ModuleRfftFn = unsafe extern "C" fn(
     out_tensors: *mut AbiRfftOutput,
 ) -> PluginStatus;
 
+/// Activation operation with one scalar argument.
+pub type ActivationScalarFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    scalar: AbiScalar,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Hard-sigmoid activation operation.
+pub type ActivationHardSigmoidFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    alpha: AbiScalar,
+    beta: AbiScalar,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
 /// Tensor addition operation.
 pub type TensorAddFn = TensorBinaryFn;
 
@@ -1194,6 +1686,12 @@ pub struct BackendTensorOpsV1 {
     pub tensor_to_device: TensorToDeviceFn,
     /// Creates an empty tensor.
     pub tensor_empty: TensorEmptyFn,
+    /// Creates a float tensor filled with zeros.
+    pub tensor_zeros: TensorEmptyFn,
+    /// Creates a float tensor filled with ones.
+    pub tensor_ones: TensorEmptyFn,
+    /// Creates a float tensor filled with a scalar value.
+    pub tensor_full: TensorFullFn,
     /// Casts a float tensor into an int tensor.
     pub tensor_into_int: TensorIntoIntFn,
     /// Dispatches tensor addition.
@@ -1344,6 +1842,66 @@ pub struct BackendTensorOpsV1 {
     pub tensor_expand: TensorReshapeFn,
     /// Dispatches tensor unfold.
     pub tensor_unfold: TensorUnfoldFn,
+    /// Dispatches tensor repeat-dim.
+    pub tensor_repeat_dim: TensorRepeatDimFn,
+    /// Dispatches tensor clamp-min.
+    pub tensor_clamp_min: TensorScalarFn,
+    /// Dispatches tensor clamp-max.
+    pub tensor_clamp_max: TensorScalarFn,
+    /// Dispatches tensor clamp.
+    pub tensor_clamp: TensorClampFn,
+    /// Dispatches tensor negation.
+    pub tensor_neg: TensorUnaryFn,
+    /// Dispatches tensor transpose.
+    pub tensor_transpose: TensorUnaryFn,
+    /// Dispatches tensor non-equality comparison.
+    pub tensor_not_equal: TensorCompareFn,
+    /// Dispatches tensor-scalar non-equality comparison.
+    pub tensor_not_equal_elem: TensorCompareScalarFn,
+    /// Dispatches tensor mean reduction.
+    pub tensor_mean: TensorUnaryFn,
+    /// Dispatches tensor integer power.
+    pub tensor_powi: TensorBinaryFn,
+    /// Dispatches tensor integer-scalar power.
+    pub tensor_powi_scalar: TensorScalarFn,
+    /// Dispatches tensor concatenation.
+    pub tensor_cat: TensorCatFn,
+    /// Dispatches tensor max reduction.
+    pub tensor_max: TensorUnaryFn,
+    /// Dispatches tensor max-dim reduction.
+    pub tensor_max_dim: TensorDimFn,
+    /// Dispatches tensor max-dim with indices.
+    pub tensor_max_dim_with_indices: TensorWithIndicesFn,
+    /// Dispatches tensor min reduction.
+    pub tensor_min: TensorUnaryFn,
+    /// Dispatches tensor min-dim reduction.
+    pub tensor_min_dim: TensorDimFn,
+    /// Dispatches tensor min-dim with indices.
+    pub tensor_min_dim_with_indices: TensorWithIndicesFn,
+    /// Dispatches tensor max-abs reduction.
+    pub tensor_max_abs: TensorUnaryFn,
+    /// Dispatches tensor max-abs-dim reduction.
+    pub tensor_max_abs_dim: TensorDimFn,
+    /// Dispatches tensor any reduction.
+    pub tensor_any: TensorBoolReduceFn,
+    /// Dispatches tensor any-dim reduction.
+    pub tensor_any_dim: TensorBoolReduceDimFn,
+    /// Dispatches tensor all reduction.
+    pub tensor_all: TensorBoolReduceFn,
+    /// Dispatches tensor all-dim reduction.
+    pub tensor_all_dim: TensorBoolReduceDimFn,
+    /// Dispatches tensor sign operation.
+    pub tensor_sign: TensorUnaryFn,
+    /// Dispatches tensor sort operation.
+    pub tensor_sort: TensorSortFn,
+    /// Dispatches tensor sort-with-indices operation.
+    pub tensor_sort_with_indices: TensorSortWithIndicesFn,
+    /// Dispatches tensor argsort operation.
+    pub tensor_argsort: TensorArgsortFn,
+    /// Dispatches tensor is-NaN check.
+    pub tensor_is_nan: TensorBoolReduceFn,
+    /// Dispatches tensor is-INF check.
+    pub tensor_is_inf: TensorBoolReduceFn,
     /// Creates an int tensor from host `u64` data.
     pub int_tensor_from_u64_data: TensorFromU64DataFn,
     /// Materializes an int tensor into host `u64` data.
@@ -1474,6 +2032,72 @@ pub struct BackendTensorOpsV1 {
     pub int_tensor_expand: TensorReshapeFn,
     /// Dispatches int tensor unfold.
     pub int_tensor_unfold: TensorUnfoldFn,
+    /// Dispatches int tensor repeat-dim.
+    pub int_tensor_repeat_dim: TensorRepeatDimFn,
+    /// Dispatches int tensor concatenation.
+    pub int_tensor_cat: TensorCatFn,
+    /// Dispatches int tensor non-equality comparison.
+    pub int_tensor_not_equal: TensorCompareFn,
+    /// Dispatches int tensor-scalar non-equality comparison.
+    pub int_tensor_not_equal_elem: TensorCompareScalarFn,
+    /// Dispatches int tensor integer power.
+    pub int_tensor_powi: TensorBinaryFn,
+    /// Dispatches int tensor integer-scalar power.
+    pub int_tensor_powi_scalar: TensorScalarFn,
+    /// Dispatches int tensor clamp-min.
+    pub int_tensor_clamp_min: TensorScalarFn,
+    /// Dispatches int tensor clamp-max.
+    pub int_tensor_clamp_max: TensorScalarFn,
+    /// Dispatches int tensor clamp.
+    pub int_tensor_clamp: TensorClampFn,
+    /// Dispatches int tensor negation.
+    pub int_tensor_neg: TensorUnaryFn,
+    /// Creates an int tensor filled with zeros.
+    pub int_tensor_zeros: TensorEmptyIntFn,
+    /// Creates an int tensor filled with ones.
+    pub int_tensor_ones: TensorEmptyIntFn,
+    /// Creates an int tensor filled with a scalar value.
+    pub int_tensor_full: TensorFullIntFn,
+    /// Dispatches int tensor mean reduction.
+    pub int_tensor_mean: TensorUnaryFn,
+    /// Dispatches int tensor max reduction.
+    pub int_tensor_max: TensorUnaryFn,
+    /// Dispatches int tensor max-dim reduction.
+    pub int_tensor_max_dim: TensorDimFn,
+    /// Dispatches int tensor max-dim with indices.
+    pub int_tensor_max_dim_with_indices: TensorWithIndicesNoDTypeFn,
+    /// Dispatches int tensor max-abs reduction.
+    pub int_tensor_max_abs: TensorUnaryFn,
+    /// Dispatches int tensor max-abs-dim reduction.
+    pub int_tensor_max_abs_dim: TensorDimFn,
+    /// Dispatches int tensor min reduction.
+    pub int_tensor_min: TensorUnaryFn,
+    /// Dispatches int tensor min-dim reduction.
+    pub int_tensor_min_dim: TensorDimFn,
+    /// Dispatches int tensor min-dim with indices.
+    pub int_tensor_min_dim_with_indices: TensorWithIndicesNoDTypeFn,
+    /// Dispatches int tensor transpose.
+    pub int_tensor_transpose: TensorUnaryFn,
+    /// Creates an int range tensor with step.
+    pub int_tensor_arange_step: IntTensorArangeStepFn,
+    /// Creates an int range tensor.
+    pub int_tensor_arange: IntTensorArangeFn,
+    /// Dispatches int tensor any reduction.
+    pub int_tensor_any: TensorBoolReduceFn,
+    /// Dispatches int tensor any-dim reduction.
+    pub int_tensor_any_dim: TensorBoolReduceDimFn,
+    /// Dispatches int tensor all reduction.
+    pub int_tensor_all: TensorBoolReduceFn,
+    /// Dispatches int tensor all-dim reduction.
+    pub int_tensor_all_dim: TensorBoolReduceDimFn,
+    /// Dispatches int tensor sign operation.
+    pub int_tensor_sign: TensorUnaryFn,
+    /// Dispatches int tensor sort operation.
+    pub int_tensor_sort: TensorSortFn,
+    /// Dispatches int tensor sort-with-indices operation.
+    pub int_tensor_sort_with_indices: TensorSortWithIndicesNoDTypeFn,
+    /// Dispatches int tensor argsort operation.
+    pub int_tensor_argsort: TensorArgsortNoDTypeFn,
     /// Creates a bool tensor from host `u8` data.
     pub bool_tensor_from_u8_data: TensorFromU8DataFn,
     /// Materializes a bool tensor into host `u8` data.
@@ -1528,6 +2152,26 @@ pub struct BackendTensorOpsV1 {
     pub bool_tensor_expand: TensorReshapeFn,
     /// Dispatches bool tensor unfold.
     pub bool_tensor_unfold: TensorUnfoldFn,
+    /// Dispatches bool tensor repeat-dim.
+    pub bool_tensor_repeat_dim: TensorRepeatDimFn,
+    /// Dispatches bool tensor concatenation.
+    pub bool_tensor_cat: TensorCatFn,
+    /// Dispatches bool tensor non-equality comparison.
+    pub bool_tensor_not_equal: TensorBoolCompareFn,
+    /// Dispatches bool tensor-scalar non-equality comparison.
+    pub bool_tensor_not_equal_elem: TensorBoolCompareScalarFn,
+    /// Dispatches bool tensor xor.
+    pub bool_tensor_xor: TensorBinaryFn,
+    /// Dispatches bool tensor transpose.
+    pub bool_tensor_transpose: TensorUnaryFn,
+    /// Dispatches bool tensor any reduction.
+    pub bool_tensor_any: TensorUnaryFn,
+    /// Dispatches bool tensor any-dim reduction.
+    pub bool_tensor_any_dim: BoolTensorDimFn,
+    /// Dispatches bool tensor all reduction.
+    pub bool_tensor_all: TensorUnaryFn,
+    /// Dispatches bool tensor all-dim reduction.
+    pub bool_tensor_all_dim: BoolTensorDimFn,
     /// Creates a quantized tensor from host `u8` bytes.
     pub q_tensor_from_u8_data: QTensorFromU8DataFn,
     /// Materializes a quantized tensor into host `u8` bytes.
@@ -1552,6 +2196,66 @@ pub struct BackendTensorOpsV1 {
     pub q_tensor_select: TensorSelectFn,
     /// Dispatches quantized tensor slice.
     pub q_tensor_slice: TensorSliceFn,
+    /// Dispatches module embedding.
+    pub module_embedding: ModuleEmbeddingFn,
+    /// Dispatches module embedding backward.
+    pub module_embedding_backward: ModuleEmbeddingBackwardFn,
+    /// Dispatches module conv1d.
+    pub module_conv1d: ModuleConv1dFn,
+    /// Dispatches module conv1d input-backward.
+    pub module_conv1d_x_backward: ModuleConv1dXBackwardFn,
+    /// Dispatches module conv1d weight-backward.
+    pub module_conv1d_weight_backward: ModuleConv1dWeightBackwardFn,
+    /// Dispatches module conv1d bias-backward.
+    pub module_conv1d_bias_backward: ModuleConv1dBiasBackwardFn,
+    /// Dispatches module conv2d input-backward.
+    pub module_conv2d_x_backward: ModuleConv2dXBackwardFn,
+    /// Dispatches module conv2d weight-backward.
+    pub module_conv2d_weight_backward: ModuleConv2dWeightBackwardFn,
+    /// Dispatches module conv2d bias-backward.
+    pub module_conv2d_bias_backward: ModuleConv2dBiasBackwardFn,
+    /// Dispatches module conv3d input-backward.
+    pub module_conv3d_x_backward: ModuleConv3dXBackwardFn,
+    /// Dispatches module conv3d weight-backward.
+    pub module_conv3d_weight_backward: ModuleConv3dWeightBackwardFn,
+    /// Dispatches module conv3d bias-backward.
+    pub module_conv3d_bias_backward: ModuleConv3dBiasBackwardFn,
+    /// Dispatches module transposed conv1d.
+    pub module_conv_transpose1d: ModuleConvTranspose1dFn,
+    /// Dispatches module transposed conv1d input-backward.
+    pub module_conv_transpose1d_x_backward: ModuleConvTranspose1dXBackwardFn,
+    /// Dispatches module transposed conv1d weight-backward.
+    pub module_conv_transpose1d_weight_backward: ModuleConvTranspose1dWeightBackwardFn,
+    /// Dispatches module transposed conv1d bias-backward.
+    pub module_conv_transpose1d_bias_backward: ModuleConvTranspose1dBiasBackwardFn,
+    /// Dispatches module transposed conv2d input-backward.
+    pub module_conv_transpose2d_x_backward: ModuleConvTranspose2dXBackwardFn,
+    /// Dispatches module transposed conv2d weight-backward.
+    pub module_conv_transpose2d_weight_backward: ModuleConvTranspose2dWeightBackwardFn,
+    /// Dispatches module transposed conv2d bias-backward.
+    pub module_conv_transpose2d_bias_backward: ModuleConvTranspose2dBiasBackwardFn,
+    /// Dispatches module transposed conv3d input-backward.
+    pub module_conv_transpose3d_x_backward: ModuleConvTranspose3dXBackwardFn,
+    /// Dispatches module transposed conv3d weight-backward.
+    pub module_conv_transpose3d_weight_backward: ModuleConvTranspose3dWeightBackwardFn,
+    /// Dispatches module transposed conv3d bias-backward.
+    pub module_conv_transpose3d_bias_backward: ModuleConvTranspose3dBiasBackwardFn,
+    /// Dispatches module unfold4d.
+    pub module_unfold4d: ModuleUnfold4dFn,
+    /// Dispatches module avg-pool1d.
+    pub module_avg_pool1d: ModuleAvgPool1dFn,
+    /// Dispatches module avg-pool1d backward.
+    pub module_avg_pool1d_backward: ModuleAvgPool1dBackwardFn,
+    /// Dispatches module adaptive avg-pool1d.
+    pub module_adaptive_avg_pool1d: ModuleAdaptiveAvgPool1dFn,
+    /// Dispatches module adaptive avg-pool1d backward.
+    pub module_adaptive_avg_pool1d_backward: ModuleAdaptiveAvgPool1dBackwardFn,
+    /// Dispatches module max-pool1d.
+    pub module_max_pool1d: ModuleMaxPool1dFn,
+    /// Dispatches module max-pool1d with indices.
+    pub module_max_pool1d_with_indices: ModuleMaxPool1dWithIndicesFn,
+    /// Dispatches module max-pool1d with indices backward.
+    pub module_max_pool1d_with_indices_backward: ModuleMaxPool1dBackwardFn,
     /// Dispatches module conv2d.
     pub module_conv2d: ModuleConv2dFn,
     /// Dispatches module deformable conv2d.
@@ -1586,6 +2290,28 @@ pub struct BackendTensorOpsV1 {
     pub module_attention: ModuleAttentionFn,
     /// Dispatches module RFFT.
     pub module_rfft: ModuleRfftFn,
+    /// Dispatches leaky ReLU activation.
+    pub activation_leaky_relu: ActivationScalarFn,
+    /// Dispatches ReLU activation.
+    pub activation_relu: TensorUnaryFn,
+    /// Dispatches ReLU backward activation.
+    pub activation_relu_backward: TensorBinaryFn,
+    /// Dispatches GELU activation.
+    pub activation_gelu: TensorUnaryFn,
+    /// Dispatches PReLU activation.
+    pub activation_prelu: TensorBinaryFn,
+    /// Dispatches GELU backward activation.
+    pub activation_gelu_backward: TensorBinaryFn,
+    /// Dispatches sigmoid activation.
+    pub activation_sigmoid: TensorUnaryFn,
+    /// Dispatches sigmoid backward activation.
+    pub activation_sigmoid_backward: TensorBinaryFn,
+    /// Dispatches hard-sigmoid activation.
+    pub activation_hard_sigmoid: ActivationHardSigmoidFn,
+    /// Dispatches log-sigmoid activation.
+    pub activation_log_sigmoid: TensorUnaryFn,
+    /// Dispatches log-sigmoid backward activation.
+    pub activation_log_sigmoid_backward: TensorBinaryFn,
     /// Releases a tensor handle.
     pub release_tensor: TensorReleaseFn,
     /// Releases a plugin-allocated f32 buffer.
@@ -1638,6 +2364,7 @@ pub type BackendTensorOpsEntrypoint = unsafe extern "C" fn() -> *const BackendTe
 macro_rules! export_backend_plugin_v1 {
     ($plugin:path) => {
         #[unsafe(no_mangle)]
+        #[doc = "Exports the backend plugin descriptor symbol."]
         pub unsafe extern "C" fn burn_backend_plugin_v1() -> *const $crate::BackendPluginV1 {
             core::ptr::addr_of!($plugin)
         }
@@ -1735,6 +2462,7 @@ macro_rules! export_backend_plugin_v1 {
 macro_rules! export_backend_tensor_ops_v1 {
     ($ops:path) => {
         #[unsafe(no_mangle)]
+        #[doc = "Exports the backend tensor-operations descriptor symbol."]
         pub unsafe extern "C" fn burn_backend_tensor_ops_v1() -> *const $crate::BackendTensorOpsV1 {
             core::ptr::addr_of!($ops)
         }
@@ -1774,21 +2502,22 @@ macro_rules! export_plugin_api {
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod loader {
     use super::{
-        ABI_QUANT_BLOCK_MAX_DIMS, AbiAttentionModuleOptions, AbiBoolDType, AbiConvOptions2,
-        AbiConvOptions3, AbiConvTransposeOptions2, AbiConvTransposeOptions3,
-        AbiDeformConv2dBackward, AbiDeformConvOptions2, AbiDistribution, AbiDistributionKind,
-        AbiFloatDType, AbiIntDType, AbiInterpolateMode, AbiInterpolateOptions,
-        AbiMaxPool2dWithIndices, AbiQuantLevel, AbiQuantMode, AbiQuantParam, AbiQuantScheme,
-        AbiQuantStore, AbiQuantValue, AbiRfftOutput, AbiScalar, AbiScalarKind, AbiSlice,
-        AbiSliceRef, BACKEND_PLUGIN_ABI_VERSION, BACKEND_PLUGIN_SYMBOL,
-        BACKEND_TENSOR_OPS_ABI_VERSION, BACKEND_TENSOR_OPS_SYMBOL, BackendPluginEntrypoint,
-        BackendPluginV1, BackendTensorOpsEntrypoint, BackendTensorOpsV1, DeviceHandle, F32SliceRef,
-        OwnedF32Buffer, OwnedU8Buffer, OwnedU64Buffer, OwnedUsizeBuffer, PluginStatus,
-        PluginStatusCode, TensorHandle, TensorShapeRef, U8SliceRef, U64SliceRef,
+        ABI_QUANT_BLOCK_MAX_DIMS, AbiAttentionModuleOptions, AbiBoolDType, AbiConvOptions1,
+        AbiConvOptions2, AbiConvOptions3, AbiConvTransposeOptions1, AbiConvTransposeOptions2,
+        AbiConvTransposeOptions3, AbiDeformConv2dBackward, AbiDeformConvOptions2, AbiDistribution,
+        AbiDistributionKind, AbiFloatDType, AbiIntDType, AbiInterpolateMode, AbiInterpolateOptions,
+        AbiMaxPool1dWithIndices, AbiMaxPool2dWithIndices, AbiQuantLevel, AbiQuantMode,
+        AbiQuantParam, AbiQuantScheme, AbiQuantStore, AbiQuantValue, AbiRfftOutput, AbiScalar,
+        AbiScalarKind, AbiSlice, AbiSliceRef, AbiTensorWithIndices, AbiUnfoldOptions,
+        BACKEND_PLUGIN_ABI_VERSION, BACKEND_PLUGIN_SYMBOL, BACKEND_TENSOR_OPS_ABI_VERSION,
+        BACKEND_TENSOR_OPS_SYMBOL, BackendPluginEntrypoint, BackendPluginV1,
+        BackendTensorOpsEntrypoint, BackendTensorOpsV1, DeviceHandle, F32SliceRef, OwnedF32Buffer,
+        OwnedU8Buffer, OwnedU64Buffer, OwnedUsizeBuffer, PluginStatus, PluginStatusCode,
+        TensorHandle, TensorHandleRef, TensorShapeRef, U8SliceRef, U64SliceRef,
     };
     use burn_backend::ops::{
         AttentionModuleOptions, ConvOptions, ConvTransposeOptions, DeformConvOptions,
-        InterpolateMode, InterpolateOptions,
+        InterpolateMode, InterpolateOptions, UnfoldOptions,
     };
     use burn_backend::quantization::{
         BlockSize, QuantLevel, QuantMode, QuantParam, QuantScheme, QuantStore, QuantValue,
@@ -1925,6 +2654,24 @@ pub mod loader {
         pub indices: TensorHandle,
     }
 
+    /// Handles produced by max-pool1d-with-indices.
+    #[derive(Debug, Clone, Copy)]
+    pub struct MaxPool1dWithIndicesHandles {
+        /// Output tensor handle.
+        pub output: TensorHandle,
+        /// Indices tensor handle.
+        pub indices: TensorHandle,
+    }
+
+    /// Handles produced by operations returning values and indices.
+    #[derive(Debug, Clone, Copy)]
+    pub struct TensorWithIndicesHandles {
+        /// Values tensor handle.
+        pub values: TensorHandle,
+        /// Indices tensor handle.
+        pub indices: TensorHandle,
+    }
+
     /// Handles produced by RFFT.
     #[derive(Debug, Clone, Copy)]
     pub struct RfftHandles {
@@ -2054,6 +2801,282 @@ pub mod loader {
                 let out_dtype = int_dtype_to_abi(out_dtype);
                 self.call_with_out_handle("tensor", |out| unsafe {
                     (self.tensor_ops().$field)(tensor, dim, out_dtype, out)
+                })
+            }
+        };
+    }
+
+    macro_rules! loader_clamp_method {
+        ($name:ident, $field:ident) => {
+            #[allow(missing_docs)]
+            pub fn $name(
+                &self,
+                tensor: TensorHandle,
+                min: Scalar,
+                max: Scalar,
+            ) -> Result<TensorHandle, PluginCallError> {
+                let min = scalar_to_abi(min);
+                let max = scalar_to_abi(max);
+                self.call_with_out_handle("tensor", |out| unsafe {
+                    (self.tensor_ops().$field)(tensor, min, max, out)
+                })
+            }
+        };
+    }
+
+    macro_rules! loader_repeat_dim_method {
+        ($name:ident, $field:ident) => {
+            #[allow(missing_docs)]
+            pub fn $name(
+                &self,
+                tensor: TensorHandle,
+                dim: usize,
+                times: usize,
+            ) -> Result<TensorHandle, PluginCallError> {
+                self.call_with_out_handle("tensor", |out| unsafe {
+                    (self.tensor_ops().$field)(tensor, dim, times, out)
+                })
+            }
+        };
+    }
+
+    macro_rules! loader_cat_method {
+        ($name:ident, $field:ident) => {
+            #[allow(missing_docs)]
+            pub fn $name(
+                &self,
+                tensors: &[TensorHandle],
+                dim: usize,
+            ) -> Result<TensorHandle, PluginCallError> {
+                let tensors_ref = TensorHandleRef {
+                    ptr: tensors.as_ptr(),
+                    len: tensors.len(),
+                };
+                self.call_with_out_handle("tensor", |out| unsafe {
+                    (self.tensor_ops().$field)(tensors_ref, dim, out)
+                })
+            }
+        };
+    }
+
+    macro_rules! loader_bool_reduce_method {
+        ($name:ident, $field:ident) => {
+            #[allow(missing_docs)]
+            pub fn $name(
+                &self,
+                tensor: TensorHandle,
+                out_dtype: BoolDType,
+            ) -> Result<TensorHandle, PluginCallError> {
+                let out_dtype = bool_dtype_to_abi(out_dtype);
+                self.call_with_out_handle("tensor", |out| unsafe {
+                    (self.tensor_ops().$field)(tensor, out_dtype, out)
+                })
+            }
+        };
+    }
+
+    macro_rules! loader_bool_reduce_dim_method {
+        ($name:ident, $field:ident) => {
+            #[allow(missing_docs)]
+            pub fn $name(
+                &self,
+                tensor: TensorHandle,
+                dim: usize,
+                out_dtype: BoolDType,
+            ) -> Result<TensorHandle, PluginCallError> {
+                let out_dtype = bool_dtype_to_abi(out_dtype);
+                self.call_with_out_handle("tensor", |out| unsafe {
+                    (self.tensor_ops().$field)(tensor, dim, out_dtype, out)
+                })
+            }
+        };
+    }
+
+    macro_rules! loader_bool_dim_method {
+        ($name:ident, $field:ident) => {
+            #[allow(missing_docs)]
+            pub fn $name(
+                &self,
+                tensor: TensorHandle,
+                dim: usize,
+            ) -> Result<TensorHandle, PluginCallError> {
+                self.call_with_out_handle("tensor", |out| unsafe {
+                    (self.tensor_ops().$field)(tensor, dim, out)
+                })
+            }
+        };
+    }
+
+    macro_rules! loader_with_indices_method {
+        ($name:ident, $field:ident) => {
+            #[allow(missing_docs)]
+            pub fn $name(
+                &self,
+                tensor: TensorHandle,
+                dim: usize,
+                out_dtype: IntDType,
+            ) -> Result<TensorWithIndicesHandles, PluginCallError> {
+                let out_dtype = int_dtype_to_abi(out_dtype);
+                let mut out = AbiTensorWithIndices {
+                    values: TensorHandle::INVALID,
+                    indices: TensorHandle::INVALID,
+                };
+                let status =
+                    unsafe { (self.tensor_ops().$field)(tensor, dim, out_dtype, &mut out) };
+                check_status(status)?;
+
+                if !out.values.is_valid() || !out.indices.is_valid() {
+                    return Err(PluginCallError::InvalidHandle("values_with_indices"));
+                }
+
+                Ok(TensorWithIndicesHandles {
+                    values: out.values,
+                    indices: out.indices,
+                })
+            }
+        };
+    }
+
+    macro_rules! loader_with_indices_no_dtype_method {
+        ($name:ident, $field:ident) => {
+            #[allow(missing_docs)]
+            pub fn $name(
+                &self,
+                tensor: TensorHandle,
+                dim: usize,
+            ) -> Result<TensorWithIndicesHandles, PluginCallError> {
+                let mut out = AbiTensorWithIndices {
+                    values: TensorHandle::INVALID,
+                    indices: TensorHandle::INVALID,
+                };
+                let status = unsafe { (self.tensor_ops().$field)(tensor, dim, &mut out) };
+                check_status(status)?;
+
+                if !out.values.is_valid() || !out.indices.is_valid() {
+                    return Err(PluginCallError::InvalidHandle("values_with_indices"));
+                }
+
+                Ok(TensorWithIndicesHandles {
+                    values: out.values,
+                    indices: out.indices,
+                })
+            }
+        };
+    }
+
+    macro_rules! loader_sort_method {
+        ($name:ident, $field:ident) => {
+            #[allow(missing_docs)]
+            pub fn $name(
+                &self,
+                tensor: TensorHandle,
+                dim: usize,
+                descending: bool,
+            ) -> Result<TensorHandle, PluginCallError> {
+                self.call_with_out_handle("tensor", |out| unsafe {
+                    (self.tensor_ops().$field)(tensor, dim, u8::from(descending), out)
+                })
+            }
+        };
+    }
+
+    macro_rules! loader_sort_with_indices_method {
+        ($name:ident, $field:ident) => {
+            #[allow(missing_docs)]
+            pub fn $name(
+                &self,
+                tensor: TensorHandle,
+                dim: usize,
+                descending: bool,
+                out_dtype: IntDType,
+            ) -> Result<TensorWithIndicesHandles, PluginCallError> {
+                let out_dtype = int_dtype_to_abi(out_dtype);
+                let mut out = AbiTensorWithIndices {
+                    values: TensorHandle::INVALID,
+                    indices: TensorHandle::INVALID,
+                };
+                let status = unsafe {
+                    (self.tensor_ops().$field)(
+                        tensor,
+                        dim,
+                        u8::from(descending),
+                        out_dtype,
+                        &mut out,
+                    )
+                };
+                check_status(status)?;
+
+                if !out.values.is_valid() || !out.indices.is_valid() {
+                    return Err(PluginCallError::InvalidHandle("sort_with_indices"));
+                }
+
+                Ok(TensorWithIndicesHandles {
+                    values: out.values,
+                    indices: out.indices,
+                })
+            }
+        };
+    }
+
+    macro_rules! loader_sort_with_indices_no_dtype_method {
+        ($name:ident, $field:ident) => {
+            #[allow(missing_docs)]
+            pub fn $name(
+                &self,
+                tensor: TensorHandle,
+                dim: usize,
+                descending: bool,
+            ) -> Result<TensorWithIndicesHandles, PluginCallError> {
+                let mut out = AbiTensorWithIndices {
+                    values: TensorHandle::INVALID,
+                    indices: TensorHandle::INVALID,
+                };
+                let status = unsafe {
+                    (self.tensor_ops().$field)(tensor, dim, u8::from(descending), &mut out)
+                };
+                check_status(status)?;
+
+                if !out.values.is_valid() || !out.indices.is_valid() {
+                    return Err(PluginCallError::InvalidHandle("sort_with_indices"));
+                }
+
+                Ok(TensorWithIndicesHandles {
+                    values: out.values,
+                    indices: out.indices,
+                })
+            }
+        };
+    }
+
+    macro_rules! loader_argsort_method {
+        ($name:ident, $field:ident) => {
+            #[allow(missing_docs)]
+            pub fn $name(
+                &self,
+                tensor: TensorHandle,
+                dim: usize,
+                descending: bool,
+                out_dtype: IntDType,
+            ) -> Result<TensorHandle, PluginCallError> {
+                let out_dtype = int_dtype_to_abi(out_dtype);
+                self.call_with_out_handle("tensor", |out| unsafe {
+                    (self.tensor_ops().$field)(tensor, dim, u8::from(descending), out_dtype, out)
+                })
+            }
+        };
+    }
+
+    macro_rules! loader_argsort_no_dtype_method {
+        ($name:ident, $field:ident) => {
+            #[allow(missing_docs)]
+            pub fn $name(
+                &self,
+                tensor: TensorHandle,
+                dim: usize,
+                descending: bool,
+            ) -> Result<TensorHandle, PluginCallError> {
+                self.call_with_out_handle("tensor", |out| unsafe {
+                    (self.tensor_ops().$field)(tensor, dim, u8::from(descending), out)
                 })
             }
         };
@@ -2279,6 +3302,50 @@ pub mod loader {
             })
         }
 
+        /// Creates a float tensor filled with zeros.
+        pub fn float_tensor_zeros(
+            &self,
+            device: DeviceHandle,
+            shape: &[usize],
+            dtype: FloatDType,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let shape_ref = shape_ref(shape);
+            let dtype = float_dtype_to_abi(dtype);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().tensor_zeros)(device, shape_ref, dtype, out)
+            })
+        }
+
+        /// Creates a float tensor filled with ones.
+        pub fn float_tensor_ones(
+            &self,
+            device: DeviceHandle,
+            shape: &[usize],
+            dtype: FloatDType,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let shape_ref = shape_ref(shape);
+            let dtype = float_dtype_to_abi(dtype);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().tensor_ones)(device, shape_ref, dtype, out)
+            })
+        }
+
+        /// Creates a float tensor filled with a scalar value.
+        pub fn float_tensor_full(
+            &self,
+            device: DeviceHandle,
+            shape: &[usize],
+            value: Scalar,
+            dtype: FloatDType,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let shape_ref = shape_ref(shape);
+            let value = scalar_to_abi(value);
+            let dtype = float_dtype_to_abi(dtype);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().tensor_full)(device, shape_ref, value, dtype, out)
+            })
+        }
+
         /// Casts a float tensor into an int tensor.
         pub fn float_tensor_into_int(
             &self,
@@ -2493,11 +3560,14 @@ pub mod loader {
         loader_compare_scalar_method!(float_tensor_lower_elem, tensor_lower_elem);
         loader_compare_binary_method!(float_tensor_lower_equal, tensor_lower_equal);
         loader_compare_scalar_method!(float_tensor_lower_equal_elem, tensor_lower_equal_elem);
+        loader_compare_binary_method!(float_tensor_not_equal, tensor_not_equal);
+        loader_compare_scalar_method!(float_tensor_not_equal_elem, tensor_not_equal_elem);
 
         loader_unary_method!(float_tensor_sum, tensor_sum);
         loader_dim_method!(float_tensor_sum_dim, tensor_sum_dim);
         loader_unary_method!(float_tensor_prod, tensor_prod);
         loader_dim_method!(float_tensor_prod_dim, tensor_prod_dim);
+        loader_unary_method!(float_tensor_mean, tensor_mean);
         loader_dim_method!(float_tensor_mean_dim, tensor_mean_dim);
         loader_dim_method!(float_tensor_cumsum, tensor_cumsum);
         loader_dim_method!(float_tensor_cumprod, tensor_cumprod);
@@ -2521,6 +3591,8 @@ pub mod loader {
         loader_unary_method!(float_tensor_log1p, tensor_log1p);
         loader_binary_method!(float_tensor_powf, tensor_powf);
         loader_scalar_method!(float_tensor_powf_scalar, tensor_powf_scalar);
+        loader_binary_method!(float_tensor_powi, tensor_powi);
+        loader_scalar_method!(float_tensor_powi_scalar, tensor_powi_scalar);
         loader_unary_method!(float_tensor_sqrt, tensor_sqrt);
         loader_unary_method!(float_tensor_abs, tensor_abs);
         loader_unary_method!(float_tensor_cos, tensor_cos);
@@ -2569,6 +3641,38 @@ pub mod loader {
                 (self.tensor_ops().tensor_unfold)(tensor, dim, size, step, out)
             })
         }
+
+        loader_repeat_dim_method!(float_tensor_repeat_dim, tensor_repeat_dim);
+        loader_scalar_method!(float_tensor_clamp_min, tensor_clamp_min);
+        loader_scalar_method!(float_tensor_clamp_max, tensor_clamp_max);
+        loader_clamp_method!(float_tensor_clamp, tensor_clamp);
+        loader_unary_method!(float_tensor_neg, tensor_neg);
+        loader_unary_method!(float_tensor_transpose, tensor_transpose);
+        loader_cat_method!(float_tensor_cat, tensor_cat);
+        loader_unary_method!(float_tensor_max, tensor_max);
+        loader_dim_method!(float_tensor_max_dim, tensor_max_dim);
+        loader_with_indices_method!(
+            float_tensor_max_dim_with_indices,
+            tensor_max_dim_with_indices
+        );
+        loader_unary_method!(float_tensor_min, tensor_min);
+        loader_dim_method!(float_tensor_min_dim, tensor_min_dim);
+        loader_with_indices_method!(
+            float_tensor_min_dim_with_indices,
+            tensor_min_dim_with_indices
+        );
+        loader_unary_method!(float_tensor_max_abs, tensor_max_abs);
+        loader_dim_method!(float_tensor_max_abs_dim, tensor_max_abs_dim);
+        loader_bool_reduce_method!(float_tensor_any, tensor_any);
+        loader_bool_reduce_dim_method!(float_tensor_any_dim, tensor_any_dim);
+        loader_bool_reduce_method!(float_tensor_all, tensor_all);
+        loader_bool_reduce_dim_method!(float_tensor_all_dim, tensor_all_dim);
+        loader_unary_method!(float_tensor_sign, tensor_sign);
+        loader_sort_method!(float_tensor_sort, tensor_sort);
+        loader_sort_with_indices_method!(float_tensor_sort_with_indices, tensor_sort_with_indices);
+        loader_argsort_method!(float_tensor_argsort, tensor_argsort);
+        loader_bool_reduce_method!(float_tensor_is_nan, tensor_is_nan);
+        loader_bool_reduce_method!(float_tensor_is_inf, tensor_is_inf);
 
         /// Creates an int tensor from host `u64` data and shape.
         pub fn int_tensor_from_u64_data(
@@ -2978,6 +4082,119 @@ pub mod loader {
             })
         }
 
+        loader_repeat_dim_method!(int_tensor_repeat_dim, int_tensor_repeat_dim);
+        loader_cat_method!(int_tensor_cat, int_tensor_cat);
+        loader_compare_binary_method!(int_tensor_not_equal, int_tensor_not_equal);
+        loader_compare_scalar_method!(int_tensor_not_equal_elem, int_tensor_not_equal_elem);
+        loader_binary_method!(int_tensor_powi, int_tensor_powi);
+        loader_scalar_method!(int_tensor_powi_scalar, int_tensor_powi_scalar);
+        loader_scalar_method!(int_tensor_clamp_min, int_tensor_clamp_min);
+        loader_scalar_method!(int_tensor_clamp_max, int_tensor_clamp_max);
+        loader_clamp_method!(int_tensor_clamp, int_tensor_clamp);
+        loader_unary_method!(int_tensor_neg, int_tensor_neg);
+
+        /// Creates an int tensor filled with zeros.
+        pub fn int_tensor_zeros(
+            &self,
+            device: DeviceHandle,
+            shape: &[usize],
+            dtype: IntDType,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let shape_ref = shape_ref(shape);
+            let dtype = int_dtype_to_abi(dtype);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().int_tensor_zeros)(device, shape_ref, dtype, out)
+            })
+        }
+
+        /// Creates an int tensor filled with ones.
+        pub fn int_tensor_ones(
+            &self,
+            device: DeviceHandle,
+            shape: &[usize],
+            dtype: IntDType,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let shape_ref = shape_ref(shape);
+            let dtype = int_dtype_to_abi(dtype);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().int_tensor_ones)(device, shape_ref, dtype, out)
+            })
+        }
+
+        /// Creates an int tensor filled with a scalar value.
+        pub fn int_tensor_full(
+            &self,
+            device: DeviceHandle,
+            shape: &[usize],
+            value: Scalar,
+            dtype: IntDType,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let shape_ref = shape_ref(shape);
+            let value = scalar_to_abi(value);
+            let dtype = int_dtype_to_abi(dtype);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().int_tensor_full)(device, shape_ref, value, dtype, out)
+            })
+        }
+
+        loader_unary_method!(int_tensor_mean, int_tensor_mean);
+        loader_unary_method!(int_tensor_max, int_tensor_max);
+        loader_dim_method!(int_tensor_max_dim, int_tensor_max_dim);
+        loader_with_indices_no_dtype_method!(
+            int_tensor_max_dim_with_indices,
+            int_tensor_max_dim_with_indices
+        );
+        loader_unary_method!(int_tensor_max_abs, int_tensor_max_abs);
+        loader_dim_method!(int_tensor_max_abs_dim, int_tensor_max_abs_dim);
+        loader_unary_method!(int_tensor_min, int_tensor_min);
+        loader_dim_method!(int_tensor_min_dim, int_tensor_min_dim);
+        loader_with_indices_no_dtype_method!(
+            int_tensor_min_dim_with_indices,
+            int_tensor_min_dim_with_indices
+        );
+        loader_unary_method!(int_tensor_transpose, int_tensor_transpose);
+
+        /// Creates an int range tensor with a custom step.
+        pub fn int_tensor_arange_step(
+            &self,
+            start: i64,
+            end: i64,
+            step: usize,
+            device: DeviceHandle,
+            dtype: IntDType,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let dtype = int_dtype_to_abi(dtype);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().int_tensor_arange_step)(start, end, step, device, dtype, out)
+            })
+        }
+
+        /// Creates an int range tensor with step 1.
+        pub fn int_tensor_arange(
+            &self,
+            start: i64,
+            end: i64,
+            device: DeviceHandle,
+            dtype: IntDType,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let dtype = int_dtype_to_abi(dtype);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().int_tensor_arange)(start, end, device, dtype, out)
+            })
+        }
+
+        loader_bool_reduce_method!(int_tensor_any, int_tensor_any);
+        loader_bool_reduce_dim_method!(int_tensor_any_dim, int_tensor_any_dim);
+        loader_bool_reduce_method!(int_tensor_all, int_tensor_all);
+        loader_bool_reduce_dim_method!(int_tensor_all_dim, int_tensor_all_dim);
+        loader_unary_method!(int_tensor_sign, int_tensor_sign);
+        loader_sort_method!(int_tensor_sort, int_tensor_sort);
+        loader_sort_with_indices_no_dtype_method!(
+            int_tensor_sort_with_indices,
+            int_tensor_sort_with_indices
+        );
+        loader_argsort_no_dtype_method!(int_tensor_argsort, int_tensor_argsort);
+
         /// Casts a bool tensor into an int tensor.
         pub fn bool_tensor_into_int(
             &self,
@@ -3242,6 +4459,17 @@ pub mod loader {
             })
         }
 
+        loader_repeat_dim_method!(bool_tensor_repeat_dim, bool_tensor_repeat_dim);
+        loader_cat_method!(bool_tensor_cat, bool_tensor_cat);
+        loader_binary_method!(bool_tensor_not_equal, bool_tensor_not_equal);
+        loader_scalar_method!(bool_tensor_not_equal_elem, bool_tensor_not_equal_elem);
+        loader_binary_method!(bool_tensor_xor, bool_tensor_xor);
+        loader_unary_method!(bool_tensor_transpose, bool_tensor_transpose);
+        loader_unary_method!(bool_tensor_any, bool_tensor_any);
+        loader_bool_dim_method!(bool_tensor_any_dim, bool_tensor_any_dim);
+        loader_unary_method!(bool_tensor_all, bool_tensor_all);
+        loader_bool_dim_method!(bool_tensor_all_dim, bool_tensor_all_dim);
+
         /// Creates a quantized tensor from host bytes, shape and quantization scheme.
         pub fn q_tensor_from_u8_data(
             &self,
@@ -3429,6 +4657,517 @@ pub mod loader {
             };
             self.call_with_out_handle("tensor", |out| unsafe {
                 (self.tensor_ops().q_tensor_slice)(tensor, slices_ref, out)
+            })
+        }
+
+        /// Dispatches `embedding` module operation.
+        pub fn module_embedding(
+            &self,
+            weights: TensorHandle,
+            indices: TensorHandle,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_embedding)(weights, indices, out)
+            })
+        }
+
+        /// Dispatches `embedding_backward` module operation.
+        pub fn module_embedding_backward(
+            &self,
+            weights: TensorHandle,
+            output_grad: TensorHandle,
+            indices: TensorHandle,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_embedding_backward)(weights, output_grad, indices, out)
+            })
+        }
+
+        /// Dispatches `conv1d` module operation.
+        pub fn module_conv1d(
+            &self,
+            x: TensorHandle,
+            weight: TensorHandle,
+            bias: Option<TensorHandle>,
+            options: ConvOptions<1>,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let bias = bias.unwrap_or(TensorHandle::INVALID);
+            let options = conv_options_1_to_abi(options);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv1d)(x, weight, bias, options, out)
+            })
+        }
+
+        /// Dispatches `conv1d_x_backward` module operation.
+        pub fn module_conv1d_x_backward(
+            &self,
+            x: TensorHandle,
+            weight: TensorHandle,
+            output_grad: TensorHandle,
+            options: ConvOptions<1>,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let options = conv_options_1_to_abi(options);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv1d_x_backward)(x, weight, output_grad, options, out)
+            })
+        }
+
+        /// Dispatches `conv1d_weight_backward` module operation.
+        pub fn module_conv1d_weight_backward(
+            &self,
+            x: TensorHandle,
+            weight: TensorHandle,
+            output_grad: TensorHandle,
+            options: ConvOptions<1>,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let options = conv_options_1_to_abi(options);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv1d_weight_backward)(
+                    x,
+                    weight,
+                    output_grad,
+                    options,
+                    out,
+                )
+            })
+        }
+
+        /// Dispatches `conv1d_bias_backward` module operation.
+        pub fn module_conv1d_bias_backward(
+            &self,
+            x: TensorHandle,
+            bias: TensorHandle,
+            output_grad: TensorHandle,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv1d_bias_backward)(x, bias, output_grad, out)
+            })
+        }
+
+        /// Dispatches `conv2d_x_backward` module operation.
+        pub fn module_conv2d_x_backward(
+            &self,
+            x: TensorHandle,
+            weight: TensorHandle,
+            output_grad: TensorHandle,
+            options: ConvOptions<2>,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let options = conv_options_2_to_abi(options);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv2d_x_backward)(x, weight, output_grad, options, out)
+            })
+        }
+
+        /// Dispatches `conv2d_weight_backward` module operation.
+        pub fn module_conv2d_weight_backward(
+            &self,
+            x: TensorHandle,
+            weight: TensorHandle,
+            output_grad: TensorHandle,
+            options: ConvOptions<2>,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let options = conv_options_2_to_abi(options);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv2d_weight_backward)(
+                    x,
+                    weight,
+                    output_grad,
+                    options,
+                    out,
+                )
+            })
+        }
+
+        /// Dispatches `conv2d_bias_backward` module operation.
+        pub fn module_conv2d_bias_backward(
+            &self,
+            x: TensorHandle,
+            bias: TensorHandle,
+            output_grad: TensorHandle,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv2d_bias_backward)(x, bias, output_grad, out)
+            })
+        }
+
+        /// Dispatches `conv3d_x_backward` module operation.
+        pub fn module_conv3d_x_backward(
+            &self,
+            x: TensorHandle,
+            weight: TensorHandle,
+            output_grad: TensorHandle,
+            options: ConvOptions<3>,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let options = conv_options_3_to_abi(options);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv3d_x_backward)(x, weight, output_grad, options, out)
+            })
+        }
+
+        /// Dispatches `conv3d_weight_backward` module operation.
+        pub fn module_conv3d_weight_backward(
+            &self,
+            x: TensorHandle,
+            weight: TensorHandle,
+            output_grad: TensorHandle,
+            options: ConvOptions<3>,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let options = conv_options_3_to_abi(options);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv3d_weight_backward)(
+                    x,
+                    weight,
+                    output_grad,
+                    options,
+                    out,
+                )
+            })
+        }
+
+        /// Dispatches `conv3d_bias_backward` module operation.
+        pub fn module_conv3d_bias_backward(
+            &self,
+            x: TensorHandle,
+            bias: TensorHandle,
+            output_grad: TensorHandle,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv3d_bias_backward)(x, bias, output_grad, out)
+            })
+        }
+
+        /// Dispatches `conv_transpose1d` module operation.
+        pub fn module_conv_transpose1d(
+            &self,
+            x: TensorHandle,
+            weight: TensorHandle,
+            bias: Option<TensorHandle>,
+            options: ConvTransposeOptions<1>,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let bias = bias.unwrap_or(TensorHandle::INVALID);
+            let options = conv_transpose_options_1_to_abi(options);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv_transpose1d)(x, weight, bias, options, out)
+            })
+        }
+
+        /// Dispatches `conv_transpose1d_x_backward` module operation.
+        pub fn module_conv_transpose1d_x_backward(
+            &self,
+            weight: TensorHandle,
+            output_grad: TensorHandle,
+            options: ConvTransposeOptions<1>,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let options = conv_transpose_options_1_to_abi(options);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv_transpose1d_x_backward)(
+                    weight,
+                    output_grad,
+                    options,
+                    out,
+                )
+            })
+        }
+
+        /// Dispatches `conv_transpose1d_weight_backward` module operation.
+        pub fn module_conv_transpose1d_weight_backward(
+            &self,
+            x: TensorHandle,
+            weight: TensorHandle,
+            output_grad: TensorHandle,
+            options: ConvTransposeOptions<1>,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let options = conv_transpose_options_1_to_abi(options);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv_transpose1d_weight_backward)(
+                    x,
+                    weight,
+                    output_grad,
+                    options,
+                    out,
+                )
+            })
+        }
+
+        /// Dispatches `conv_transpose1d_bias_backward` module operation.
+        pub fn module_conv_transpose1d_bias_backward(
+            &self,
+            x: TensorHandle,
+            bias: TensorHandle,
+            output_grad: TensorHandle,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv_transpose1d_bias_backward)(x, bias, output_grad, out)
+            })
+        }
+
+        /// Dispatches `conv_transpose2d_x_backward` module operation.
+        pub fn module_conv_transpose2d_x_backward(
+            &self,
+            weight: TensorHandle,
+            output_grad: TensorHandle,
+            options: ConvTransposeOptions<2>,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let options = conv_transpose_options_2_to_abi(options);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv_transpose2d_x_backward)(
+                    weight,
+                    output_grad,
+                    options,
+                    out,
+                )
+            })
+        }
+
+        /// Dispatches `conv_transpose2d_weight_backward` module operation.
+        pub fn module_conv_transpose2d_weight_backward(
+            &self,
+            x: TensorHandle,
+            weight: TensorHandle,
+            output_grad: TensorHandle,
+            options: ConvTransposeOptions<2>,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let options = conv_transpose_options_2_to_abi(options);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv_transpose2d_weight_backward)(
+                    x,
+                    weight,
+                    output_grad,
+                    options,
+                    out,
+                )
+            })
+        }
+
+        /// Dispatches `conv_transpose2d_bias_backward` module operation.
+        pub fn module_conv_transpose2d_bias_backward(
+            &self,
+            x: TensorHandle,
+            bias: TensorHandle,
+            output_grad: TensorHandle,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv_transpose2d_bias_backward)(x, bias, output_grad, out)
+            })
+        }
+
+        /// Dispatches `conv_transpose3d_x_backward` module operation.
+        pub fn module_conv_transpose3d_x_backward(
+            &self,
+            weight: TensorHandle,
+            output_grad: TensorHandle,
+            options: ConvTransposeOptions<3>,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let options = conv_transpose_options_3_to_abi(options);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv_transpose3d_x_backward)(
+                    weight,
+                    output_grad,
+                    options,
+                    out,
+                )
+            })
+        }
+
+        /// Dispatches `conv_transpose3d_weight_backward` module operation.
+        pub fn module_conv_transpose3d_weight_backward(
+            &self,
+            x: TensorHandle,
+            weight: TensorHandle,
+            output_grad: TensorHandle,
+            options: ConvTransposeOptions<3>,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let options = conv_transpose_options_3_to_abi(options);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv_transpose3d_weight_backward)(
+                    x,
+                    weight,
+                    output_grad,
+                    options,
+                    out,
+                )
+            })
+        }
+
+        /// Dispatches `conv_transpose3d_bias_backward` module operation.
+        pub fn module_conv_transpose3d_bias_backward(
+            &self,
+            x: TensorHandle,
+            bias: TensorHandle,
+            output_grad: TensorHandle,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_conv_transpose3d_bias_backward)(x, bias, output_grad, out)
+            })
+        }
+
+        /// Dispatches `unfold4d` module operation.
+        pub fn module_unfold4d(
+            &self,
+            x: TensorHandle,
+            kernel_size: [usize; 2],
+            options: UnfoldOptions,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let options = unfold_options_to_abi(options);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_unfold4d)(x, kernel_size, options, out)
+            })
+        }
+
+        /// Dispatches `avg_pool1d` module operation.
+        pub fn module_avg_pool1d(
+            &self,
+            x: TensorHandle,
+            kernel_size: usize,
+            stride: usize,
+            padding: usize,
+            count_include_pad: bool,
+            ceil_mode: bool,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_avg_pool1d)(
+                    x,
+                    kernel_size,
+                    stride,
+                    padding,
+                    u8::from(count_include_pad),
+                    u8::from(ceil_mode),
+                    out,
+                )
+            })
+        }
+
+        /// Dispatches `avg_pool1d_backward` module operation.
+        pub fn module_avg_pool1d_backward(
+            &self,
+            x: TensorHandle,
+            grad: TensorHandle,
+            kernel_size: usize,
+            stride: usize,
+            padding: usize,
+            count_include_pad: bool,
+            ceil_mode: bool,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_avg_pool1d_backward)(
+                    x,
+                    grad,
+                    kernel_size,
+                    stride,
+                    padding,
+                    u8::from(count_include_pad),
+                    u8::from(ceil_mode),
+                    out,
+                )
+            })
+        }
+
+        /// Dispatches `adaptive_avg_pool1d` module operation.
+        pub fn module_adaptive_avg_pool1d(
+            &self,
+            x: TensorHandle,
+            output_size: usize,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_adaptive_avg_pool1d)(x, output_size, out)
+            })
+        }
+
+        /// Dispatches `adaptive_avg_pool1d_backward` module operation.
+        pub fn module_adaptive_avg_pool1d_backward(
+            &self,
+            x: TensorHandle,
+            grad: TensorHandle,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_adaptive_avg_pool1d_backward)(x, grad, out)
+            })
+        }
+
+        /// Dispatches `max_pool1d` module operation.
+        pub fn module_max_pool1d(
+            &self,
+            x: TensorHandle,
+            kernel_size: usize,
+            stride: usize,
+            padding: usize,
+            dilation: usize,
+            ceil_mode: bool,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_max_pool1d)(
+                    x,
+                    kernel_size,
+                    stride,
+                    padding,
+                    dilation,
+                    u8::from(ceil_mode),
+                    out,
+                )
+            })
+        }
+
+        /// Dispatches `max_pool1d_with_indices` module operation.
+        pub fn module_max_pool1d_with_indices(
+            &self,
+            x: TensorHandle,
+            kernel_size: usize,
+            stride: usize,
+            padding: usize,
+            dilation: usize,
+            ceil_mode: bool,
+        ) -> Result<MaxPool1dWithIndicesHandles, PluginCallError> {
+            let mut out = AbiMaxPool1dWithIndices {
+                output: TensorHandle::INVALID,
+                indices: TensorHandle::INVALID,
+            };
+            let status = unsafe {
+                (self.tensor_ops().module_max_pool1d_with_indices)(
+                    x,
+                    kernel_size,
+                    stride,
+                    padding,
+                    dilation,
+                    u8::from(ceil_mode),
+                    &mut out,
+                )
+            };
+            check_status(status)?;
+
+            if !out.output.is_valid() || !out.indices.is_valid() {
+                return Err(PluginCallError::InvalidHandle("max_pool1d_with_indices"));
+            }
+
+            Ok(MaxPool1dWithIndicesHandles {
+                output: out.output,
+                indices: out.indices,
+            })
+        }
+
+        /// Dispatches `max_pool1d_with_indices_backward` module operation.
+        pub fn module_max_pool1d_with_indices_backward(
+            &self,
+            x: TensorHandle,
+            kernel_size: usize,
+            stride: usize,
+            padding: usize,
+            dilation: usize,
+            ceil_mode: bool,
+            output_grad: TensorHandle,
+            indices: TensorHandle,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().module_max_pool1d_with_indices_backward)(
+                    x,
+                    kernel_size,
+                    stride,
+                    padding,
+                    dilation,
+                    u8::from(ceil_mode),
+                    output_grad,
+                    indices,
+                    out,
+                )
             })
         }
 
@@ -3811,6 +5550,46 @@ pub mod loader {
             })
         }
 
+        /// Dispatches `leaky_relu` activation operation.
+        pub fn activation_leaky_relu(
+            &self,
+            tensor: TensorHandle,
+            negative_slope: Scalar,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let negative_slope = scalar_to_abi(negative_slope);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().activation_leaky_relu)(tensor, negative_slope, out)
+            })
+        }
+
+        loader_unary_method!(activation_relu, activation_relu);
+        loader_binary_method!(activation_relu_backward, activation_relu_backward);
+        loader_unary_method!(activation_gelu, activation_gelu);
+        loader_binary_method!(activation_prelu, activation_prelu);
+        loader_binary_method!(activation_gelu_backward, activation_gelu_backward);
+        loader_unary_method!(activation_sigmoid, activation_sigmoid);
+        loader_binary_method!(activation_sigmoid_backward, activation_sigmoid_backward);
+
+        /// Dispatches `hard_sigmoid` activation operation.
+        pub fn activation_hard_sigmoid(
+            &self,
+            tensor: TensorHandle,
+            alpha: Scalar,
+            beta: Scalar,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let alpha = scalar_to_abi(alpha);
+            let beta = scalar_to_abi(beta);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().activation_hard_sigmoid)(tensor, alpha, beta, out)
+            })
+        }
+
+        loader_unary_method!(activation_log_sigmoid, activation_log_sigmoid);
+        loader_binary_method!(
+            activation_log_sigmoid_backward,
+            activation_log_sigmoid_backward
+        );
+
         /// Releases a tensor handle.
         pub fn release_tensor(&self, tensor: TensorHandle) -> Result<(), PluginCallError> {
             let status = unsafe { (self.tensor_ops().release_tensor)(tensor) };
@@ -4090,6 +5869,15 @@ pub mod loader {
         }
     }
 
+    fn conv_options_1_to_abi(options: ConvOptions<1>) -> AbiConvOptions1 {
+        AbiConvOptions1 {
+            stride: options.stride,
+            padding: options.padding,
+            dilation: options.dilation,
+            groups: options.groups,
+        }
+    }
+
     fn conv_options_3_to_abi(options: ConvOptions<3>) -> AbiConvOptions3 {
         AbiConvOptions3 {
             stride: options.stride,
@@ -4121,6 +5909,18 @@ pub mod loader {
         }
     }
 
+    fn conv_transpose_options_1_to_abi(
+        options: ConvTransposeOptions<1>,
+    ) -> AbiConvTransposeOptions1 {
+        AbiConvTransposeOptions1 {
+            stride: options.stride,
+            padding: options.padding,
+            padding_out: options.padding_out,
+            dilation: options.dilation,
+            groups: options.groups,
+        }
+    }
+
     fn conv_transpose_options_3_to_abi(
         options: ConvTransposeOptions<3>,
     ) -> AbiConvTransposeOptions3 {
@@ -4139,6 +5939,14 @@ pub mod loader {
             InterpolateMode::Bilinear => AbiInterpolateMode::Bilinear,
             InterpolateMode::Bicubic => AbiInterpolateMode::Bicubic,
             InterpolateMode::Lanczos3 => AbiInterpolateMode::Lanczos3,
+        }
+    }
+
+    fn unfold_options_to_abi(options: UnfoldOptions) -> AbiUnfoldOptions {
+        AbiUnfoldOptions {
+            stride: options.stride,
+            padding: options.padding,
+            dilation: options.dilation,
         }
     }
 

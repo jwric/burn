@@ -5,7 +5,8 @@ use burn_backend::{
     IntDType, Scalar, Shape, Slice, TensorData,
     ops::{
         AttentionModuleOptions, ConvOptions, ConvTransposeOptions, DeformConv2dBackward,
-        DeformConvOptions, InterpolateOptions, MaxPool2dBackward, MaxPool2dWithIndices,
+        DeformConvOptions, InterpolateOptions, MaxPool1dBackward, MaxPool1dWithIndices,
+        MaxPool2dBackward, MaxPool2dWithIndices, UnfoldOptions,
     },
     quantization::QuantScheme,
 };
@@ -962,6 +963,67 @@ pub(crate) fn float_tensor_empty(
     ))
 }
 
+pub(crate) fn float_tensor_zeros(
+    shape: Shape,
+    device: &DylibDevice,
+    dtype: FloatDType,
+) -> Result<DylibTensor, DylibError> {
+    let (runtime, snapshot) = resolve_device_context(device)?;
+    let handle = runtime
+        .float_tensor_zeros(snapshot.handle, shape.as_slice(), dtype)
+        .map_err(map_call_error)?;
+
+    Ok(tensor_from_output_with_fallback(
+        &runtime,
+        snapshot.runtime_id,
+        device,
+        &shape,
+        handle,
+        dtype.into(),
+    ))
+}
+
+pub(crate) fn float_tensor_ones(
+    shape: Shape,
+    device: &DylibDevice,
+    dtype: FloatDType,
+) -> Result<DylibTensor, DylibError> {
+    let (runtime, snapshot) = resolve_device_context(device)?;
+    let handle = runtime
+        .float_tensor_ones(snapshot.handle, shape.as_slice(), dtype)
+        .map_err(map_call_error)?;
+
+    Ok(tensor_from_output_with_fallback(
+        &runtime,
+        snapshot.runtime_id,
+        device,
+        &shape,
+        handle,
+        dtype.into(),
+    ))
+}
+
+pub(crate) fn float_tensor_full(
+    shape: Shape,
+    fill_value: Scalar,
+    device: &DylibDevice,
+    dtype: FloatDType,
+) -> Result<DylibTensor, DylibError> {
+    let (runtime, snapshot) = resolve_device_context(device)?;
+    let handle = runtime
+        .float_tensor_full(snapshot.handle, shape.as_slice(), fill_value, dtype)
+        .map_err(map_call_error)?;
+
+    Ok(tensor_from_output_with_fallback(
+        &runtime,
+        snapshot.runtime_id,
+        device,
+        &shape,
+        handle,
+        dtype.into(),
+    ))
+}
+
 macro_rules! define_binary_same_dtype {
     ($fn_name:ident, $loader_name:ident) => {
         pub(crate) fn $fn_name(
@@ -1049,6 +1111,182 @@ macro_rules! define_compare_scalar {
     };
 }
 
+macro_rules! define_repeat_dim_same_dtype {
+    ($fn_name:ident, $loader_name:ident) => {
+        pub(crate) fn $fn_name(
+            tensor: DylibTensor,
+            dim: usize,
+            times: usize,
+        ) -> Result<DylibTensor, DylibError> {
+            let output_dtype = tensor.dtype;
+            forward_unary_op(tensor, output_dtype, |runtime, handle| {
+                runtime.$loader_name(handle, dim, times)
+            })
+        }
+    };
+}
+
+macro_rules! define_clamp_same_dtype {
+    ($fn_name:ident, $loader_name:ident) => {
+        pub(crate) fn $fn_name(
+            tensor: DylibTensor,
+            min: Scalar,
+            max: Scalar,
+        ) -> Result<DylibTensor, DylibError> {
+            let output_dtype = tensor.dtype;
+            forward_unary_op(tensor, output_dtype, |runtime, handle| {
+                runtime.$loader_name(handle, min, max)
+            })
+        }
+    };
+}
+
+macro_rules! define_bool_reduce {
+    ($fn_name:ident, $loader_name:ident) => {
+        pub(crate) fn $fn_name(
+            tensor: DylibTensor,
+            out_dtype: BoolDType,
+        ) -> Result<DylibTensor, DylibError> {
+            let output_dtype: DType = out_dtype.into();
+            forward_unary_op(tensor, output_dtype, |runtime, handle| {
+                runtime.$loader_name(handle, out_dtype)
+            })
+        }
+    };
+}
+
+macro_rules! define_bool_reduce_dim {
+    ($fn_name:ident, $loader_name:ident) => {
+        pub(crate) fn $fn_name(
+            tensor: DylibTensor,
+            dim: usize,
+            out_dtype: BoolDType,
+        ) -> Result<DylibTensor, DylibError> {
+            let output_dtype: DType = out_dtype.into();
+            forward_unary_op(tensor, output_dtype, |runtime, handle| {
+                runtime.$loader_name(handle, dim, out_dtype)
+            })
+        }
+    };
+}
+
+macro_rules! define_sort_same_dtype {
+    ($fn_name:ident, $loader_name:ident) => {
+        pub(crate) fn $fn_name(
+            tensor: DylibTensor,
+            dim: usize,
+            descending: bool,
+        ) -> Result<DylibTensor, DylibError> {
+            let output_dtype = tensor.dtype;
+            forward_unary_op(tensor, output_dtype, |runtime, handle| {
+                runtime.$loader_name(handle, dim, descending)
+            })
+        }
+    };
+}
+
+macro_rules! define_with_indices {
+    ($fn_name:ident, $loader_name:ident) => {
+        pub(crate) fn $fn_name(
+            tensor: DylibTensor,
+            dim: usize,
+            out_dtype: IntDType,
+        ) -> Result<(DylibTensor, DylibTensor), DylibError> {
+            let runtime = get_runtime(tensor.runtime_id)?;
+            let handles = runtime
+                .$loader_name(tensor.handle, dim, out_dtype)
+                .map_err(map_call_error)?;
+            let values = tensor_from_output(&runtime, &tensor, handles.values, tensor.dtype);
+            let indices = tensor_from_output(&runtime, &tensor, handles.indices, out_dtype.into());
+            Ok((values, indices))
+        }
+    };
+}
+
+macro_rules! define_with_indices_no_dtype {
+    ($fn_name:ident, $loader_name:ident, $indices_dtype:expr) => {
+        pub(crate) fn $fn_name(
+            tensor: DylibTensor,
+            dim: usize,
+        ) -> Result<(DylibTensor, DylibTensor), DylibError> {
+            let runtime = get_runtime(tensor.runtime_id)?;
+            let handles = runtime
+                .$loader_name(tensor.handle, dim)
+                .map_err(map_call_error)?;
+            let values = tensor_from_output(&runtime, &tensor, handles.values, tensor.dtype);
+            let indices = tensor_from_output(&runtime, &tensor, handles.indices, $indices_dtype);
+            Ok((values, indices))
+        }
+    };
+}
+
+macro_rules! define_sort_with_indices {
+    ($fn_name:ident, $loader_name:ident) => {
+        pub(crate) fn $fn_name(
+            tensor: DylibTensor,
+            dim: usize,
+            descending: bool,
+            out_dtype: IntDType,
+        ) -> Result<(DylibTensor, DylibTensor), DylibError> {
+            let runtime = get_runtime(tensor.runtime_id)?;
+            let handles = runtime
+                .$loader_name(tensor.handle, dim, descending, out_dtype)
+                .map_err(map_call_error)?;
+            let values = tensor_from_output(&runtime, &tensor, handles.values, tensor.dtype);
+            let indices = tensor_from_output(&runtime, &tensor, handles.indices, out_dtype.into());
+            Ok((values, indices))
+        }
+    };
+}
+
+macro_rules! define_sort_with_indices_no_dtype {
+    ($fn_name:ident, $loader_name:ident, $indices_dtype:expr) => {
+        pub(crate) fn $fn_name(
+            tensor: DylibTensor,
+            dim: usize,
+            descending: bool,
+        ) -> Result<(DylibTensor, DylibTensor), DylibError> {
+            let runtime = get_runtime(tensor.runtime_id)?;
+            let handles = runtime
+                .$loader_name(tensor.handle, dim, descending)
+                .map_err(map_call_error)?;
+            let values = tensor_from_output(&runtime, &tensor, handles.values, tensor.dtype);
+            let indices = tensor_from_output(&runtime, &tensor, handles.indices, $indices_dtype);
+            Ok((values, indices))
+        }
+    };
+}
+
+macro_rules! define_argsort {
+    ($fn_name:ident, $loader_name:ident) => {
+        pub(crate) fn $fn_name(
+            tensor: DylibTensor,
+            dim: usize,
+            descending: bool,
+            out_dtype: IntDType,
+        ) -> Result<DylibTensor, DylibError> {
+            let output_dtype: DType = out_dtype.into();
+            forward_unary_op(tensor, output_dtype, |runtime, handle| {
+                runtime.$loader_name(handle, dim, descending, out_dtype)
+            })
+        }
+    };
+}
+
+macro_rules! define_argsort_no_dtype {
+    ($fn_name:ident, $loader_name:ident, $output_dtype:expr) => {
+        pub(crate) fn $fn_name(
+            tensor: DylibTensor,
+            dim: usize,
+            descending: bool,
+        ) -> Result<DylibTensor, DylibError> {
+            forward_unary_op(tensor, $output_dtype, |runtime, handle| {
+                runtime.$loader_name(handle, dim, descending)
+            })
+        }
+    };
+}
+
 define_binary_same_dtype!(float_tensor_add, float_tensor_add);
 define_scalar_same_dtype!(float_tensor_add_scalar, float_tensor_add_scalar);
 define_binary_same_dtype!(float_tensor_sub, float_tensor_sub);
@@ -1108,6 +1346,81 @@ define_compare_binary!(float_tensor_lower, float_tensor_lower);
 define_compare_scalar!(float_tensor_lower_elem, float_tensor_lower_elem);
 define_compare_binary!(float_tensor_lower_equal, float_tensor_lower_equal);
 define_compare_scalar!(float_tensor_lower_equal_elem, float_tensor_lower_equal_elem);
+define_repeat_dim_same_dtype!(float_tensor_repeat_dim, float_tensor_repeat_dim);
+define_scalar_same_dtype!(float_tensor_clamp_min, float_tensor_clamp_min);
+define_scalar_same_dtype!(float_tensor_clamp_max, float_tensor_clamp_max);
+define_clamp_same_dtype!(float_tensor_clamp, float_tensor_clamp);
+define_unary_same_dtype!(float_tensor_neg, float_tensor_neg);
+define_unary_same_dtype!(float_tensor_transpose, float_tensor_transpose);
+define_compare_binary!(float_tensor_not_equal, float_tensor_not_equal);
+define_compare_scalar!(float_tensor_not_equal_elem, float_tensor_not_equal_elem);
+define_unary_same_dtype!(float_tensor_mean, float_tensor_mean);
+define_scalar_same_dtype!(float_tensor_powi_scalar, float_tensor_powi_scalar);
+define_unary_same_dtype!(float_tensor_max, float_tensor_max);
+define_unary_dim_same_dtype!(float_tensor_max_dim, float_tensor_max_dim);
+define_with_indices!(
+    float_tensor_max_dim_with_indices,
+    float_tensor_max_dim_with_indices
+);
+define_unary_same_dtype!(float_tensor_min, float_tensor_min);
+define_unary_dim_same_dtype!(float_tensor_min_dim, float_tensor_min_dim);
+define_with_indices!(
+    float_tensor_min_dim_with_indices,
+    float_tensor_min_dim_with_indices
+);
+define_unary_same_dtype!(float_tensor_max_abs, float_tensor_max_abs);
+define_unary_dim_same_dtype!(float_tensor_max_abs_dim, float_tensor_max_abs_dim);
+define_bool_reduce!(float_tensor_any, float_tensor_any);
+define_bool_reduce_dim!(float_tensor_any_dim, float_tensor_any_dim);
+define_bool_reduce!(float_tensor_all, float_tensor_all);
+define_bool_reduce_dim!(float_tensor_all_dim, float_tensor_all_dim);
+define_unary_same_dtype!(float_tensor_sign, float_tensor_sign);
+define_sort_same_dtype!(float_tensor_sort, float_tensor_sort);
+define_sort_with_indices!(
+    float_tensor_sort_with_indices,
+    float_tensor_sort_with_indices
+);
+define_argsort!(float_tensor_argsort, float_tensor_argsort);
+define_bool_reduce!(float_tensor_is_nan, float_tensor_is_nan);
+define_bool_reduce!(float_tensor_is_inf, float_tensor_is_inf);
+
+pub(crate) fn float_tensor_powi(
+    lhs: DylibTensor,
+    rhs: DylibTensor,
+) -> Result<DylibTensor, DylibError> {
+    let output_dtype = lhs.dtype;
+    forward_binary_op(
+        lhs,
+        rhs,
+        output_dtype,
+        "float_tensor_powi",
+        |runtime, lhs_handle, rhs_handle| runtime.float_tensor_powi(lhs_handle, rhs_handle),
+    )
+}
+
+pub(crate) fn float_tensor_cat(
+    tensors: Vec<DylibTensor>,
+    dim: usize,
+) -> Result<DylibTensor, DylibError> {
+    let Some(first) = tensors.first().cloned() else {
+        return Err(DylibError::InvalidInput(
+            "float_tensor_cat requires at least one tensor".into(),
+        ));
+    };
+
+    let refs = tensors.iter().collect::<Vec<_>>();
+    ensure_same_runtime_and_device("float_tensor_cat", &refs)?;
+
+    let runtime = get_runtime(first.runtime_id)?;
+    let handles = tensors
+        .iter()
+        .map(|tensor| tensor.handle)
+        .collect::<Vec<_>>();
+    let handle = runtime
+        .float_tensor_cat(&handles, dim)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &first, handle, first.dtype))
+}
 
 pub(crate) fn float_tensor_cross(
     lhs: DylibTensor,
@@ -1451,6 +1764,67 @@ pub(crate) fn int_tensor_empty(
     ))
 }
 
+pub(crate) fn int_tensor_zeros(
+    shape: Shape,
+    device: &DylibDevice,
+    dtype: IntDType,
+) -> Result<DylibTensor, DylibError> {
+    let (runtime, snapshot) = resolve_device_context(device)?;
+    let handle = runtime
+        .int_tensor_zeros(snapshot.handle, shape.as_slice(), dtype)
+        .map_err(map_call_error)?;
+
+    Ok(tensor_from_output_with_fallback(
+        &runtime,
+        snapshot.runtime_id,
+        device,
+        &shape,
+        handle,
+        dtype.into(),
+    ))
+}
+
+pub(crate) fn int_tensor_ones(
+    shape: Shape,
+    device: &DylibDevice,
+    dtype: IntDType,
+) -> Result<DylibTensor, DylibError> {
+    let (runtime, snapshot) = resolve_device_context(device)?;
+    let handle = runtime
+        .int_tensor_ones(snapshot.handle, shape.as_slice(), dtype)
+        .map_err(map_call_error)?;
+
+    Ok(tensor_from_output_with_fallback(
+        &runtime,
+        snapshot.runtime_id,
+        device,
+        &shape,
+        handle,
+        dtype.into(),
+    ))
+}
+
+pub(crate) fn int_tensor_full(
+    shape: Shape,
+    fill_value: Scalar,
+    device: &DylibDevice,
+    dtype: IntDType,
+) -> Result<DylibTensor, DylibError> {
+    let (runtime, snapshot) = resolve_device_context(device)?;
+    let handle = runtime
+        .int_tensor_full(snapshot.handle, shape.as_slice(), fill_value, dtype)
+        .map_err(map_call_error)?;
+
+    Ok(tensor_from_output_with_fallback(
+        &runtime,
+        snapshot.runtime_id,
+        device,
+        &shape,
+        handle,
+        dtype.into(),
+    ))
+}
+
 pub(crate) fn int_tensor_random(
     shape: Shape,
     distribution: Distribution,
@@ -1467,6 +1841,58 @@ pub(crate) fn int_tensor_random(
         snapshot.runtime_id,
         device,
         &shape,
+        handle,
+        dtype.into(),
+    ))
+}
+
+pub(crate) fn int_tensor_arange_step(
+    range: core::ops::Range<i64>,
+    step: usize,
+    device: &DylibDevice,
+    dtype: IntDType,
+) -> Result<DylibTensor, DylibError> {
+    let fallback_len = if range.end <= range.start {
+        0
+    } else {
+        let distance = (range.end - range.start) as usize;
+        (distance + step.saturating_sub(1)) / step.max(1)
+    };
+    let (runtime, snapshot) = resolve_device_context(device)?;
+    let handle = runtime
+        .int_tensor_arange_step(range.start, range.end, step, snapshot.handle, dtype)
+        .map_err(map_call_error)?;
+
+    Ok(tensor_from_output_with_fallback(
+        &runtime,
+        snapshot.runtime_id,
+        device,
+        &Shape::new([fallback_len]),
+        handle,
+        dtype.into(),
+    ))
+}
+
+pub(crate) fn int_tensor_arange(
+    range: core::ops::Range<i64>,
+    device: &DylibDevice,
+    dtype: IntDType,
+) -> Result<DylibTensor, DylibError> {
+    let fallback_len = if range.end <= range.start {
+        0
+    } else {
+        (range.end - range.start) as usize
+    };
+    let (runtime, snapshot) = resolve_device_context(device)?;
+    let handle = runtime
+        .int_tensor_arange(range.start, range.end, snapshot.handle, dtype)
+        .map_err(map_call_error)?;
+
+    Ok(tensor_from_output_with_fallback(
+        &runtime,
+        snapshot.runtime_id,
+        device,
+        &Shape::new([fallback_len]),
         handle,
         dtype.into(),
     ))
@@ -1535,6 +1961,69 @@ define_scalar_same_dtype!(
     int_tensor_bitwise_right_shift_scalar,
     int_tensor_bitwise_right_shift_scalar
 );
+define_repeat_dim_same_dtype!(int_tensor_repeat_dim, int_tensor_repeat_dim);
+define_compare_binary!(int_tensor_not_equal, int_tensor_not_equal);
+define_compare_scalar!(int_tensor_not_equal_elem, int_tensor_not_equal_elem);
+define_binary_same_dtype!(int_tensor_powi, int_tensor_powi);
+define_scalar_same_dtype!(int_tensor_powi_scalar, int_tensor_powi_scalar);
+define_scalar_same_dtype!(int_tensor_clamp_min, int_tensor_clamp_min);
+define_scalar_same_dtype!(int_tensor_clamp_max, int_tensor_clamp_max);
+define_clamp_same_dtype!(int_tensor_clamp, int_tensor_clamp);
+define_unary_same_dtype!(int_tensor_neg, int_tensor_neg);
+define_unary_same_dtype!(int_tensor_mean, int_tensor_mean);
+define_unary_same_dtype!(int_tensor_max, int_tensor_max);
+define_unary_dim_same_dtype!(int_tensor_max_dim, int_tensor_max_dim);
+define_with_indices_no_dtype!(
+    int_tensor_max_dim_with_indices,
+    int_tensor_max_dim_with_indices,
+    IntDType::I64.into()
+);
+define_unary_same_dtype!(int_tensor_max_abs, int_tensor_max_abs);
+define_unary_dim_same_dtype!(int_tensor_max_abs_dim, int_tensor_max_abs_dim);
+define_unary_same_dtype!(int_tensor_min, int_tensor_min);
+define_unary_dim_same_dtype!(int_tensor_min_dim, int_tensor_min_dim);
+define_with_indices_no_dtype!(
+    int_tensor_min_dim_with_indices,
+    int_tensor_min_dim_with_indices,
+    IntDType::I64.into()
+);
+define_unary_same_dtype!(int_tensor_transpose, int_tensor_transpose);
+define_bool_reduce!(int_tensor_any, int_tensor_any);
+define_bool_reduce_dim!(int_tensor_any_dim, int_tensor_any_dim);
+define_bool_reduce!(int_tensor_all, int_tensor_all);
+define_bool_reduce_dim!(int_tensor_all_dim, int_tensor_all_dim);
+define_unary_same_dtype!(int_tensor_sign, int_tensor_sign);
+define_sort_same_dtype!(int_tensor_sort, int_tensor_sort);
+define_sort_with_indices_no_dtype!(
+    int_tensor_sort_with_indices,
+    int_tensor_sort_with_indices,
+    IntDType::I64.into()
+);
+define_argsort_no_dtype!(int_tensor_argsort, int_tensor_argsort, IntDType::I64.into());
+
+pub(crate) fn int_tensor_cat(
+    tensors: Vec<DylibTensor>,
+    dim: usize,
+) -> Result<DylibTensor, DylibError> {
+    let Some(first) = tensors.first().cloned() else {
+        return Err(DylibError::InvalidInput(
+            "int_tensor_cat requires at least one tensor".into(),
+        ));
+    };
+
+    let refs = tensors.iter().collect::<Vec<_>>();
+    ensure_same_runtime_and_device("int_tensor_cat", &refs)?;
+
+    let runtime = get_runtime(first.runtime_id)?;
+    let handles = tensors
+        .iter()
+        .map(|tensor| tensor.handle)
+        .collect::<Vec<_>>();
+    let handle = runtime
+        .int_tensor_cat(&handles, dim)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &first, handle, first.dtype))
+}
 
 pub(crate) fn int_tensor_swap_dims(
     tensor: DylibTensor,
@@ -1884,6 +2373,39 @@ define_binary_same_dtype!(bool_tensor_and, bool_tensor_and);
 define_binary_same_dtype!(bool_tensor_or, bool_tensor_or);
 define_binary_same_dtype!(bool_tensor_equal, bool_tensor_equal);
 define_scalar_same_dtype!(bool_tensor_equal_elem, bool_tensor_equal_elem);
+define_repeat_dim_same_dtype!(bool_tensor_repeat_dim, bool_tensor_repeat_dim);
+define_binary_same_dtype!(bool_tensor_not_equal, bool_tensor_not_equal);
+define_scalar_same_dtype!(bool_tensor_not_equal_elem, bool_tensor_not_equal_elem);
+define_binary_same_dtype!(bool_tensor_xor, bool_tensor_xor);
+define_unary_same_dtype!(bool_tensor_transpose, bool_tensor_transpose);
+define_unary_same_dtype!(bool_tensor_any, bool_tensor_any);
+define_unary_dim_same_dtype!(bool_tensor_any_dim, bool_tensor_any_dim);
+define_unary_same_dtype!(bool_tensor_all, bool_tensor_all);
+define_unary_dim_same_dtype!(bool_tensor_all_dim, bool_tensor_all_dim);
+
+pub(crate) fn bool_tensor_cat(
+    tensors: Vec<DylibTensor>,
+    dim: usize,
+) -> Result<DylibTensor, DylibError> {
+    let Some(first) = tensors.first().cloned() else {
+        return Err(DylibError::InvalidInput(
+            "bool_tensor_cat requires at least one tensor".into(),
+        ));
+    };
+
+    let refs = tensors.iter().collect::<Vec<_>>();
+    ensure_same_runtime_and_device("bool_tensor_cat", &refs)?;
+
+    let runtime = get_runtime(first.runtime_id)?;
+    let handles = tensors
+        .iter()
+        .map(|tensor| tensor.handle)
+        .collect::<Vec<_>>();
+    let handle = runtime
+        .bool_tensor_cat(&handles, dim)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &first, handle, first.dtype))
+}
 
 pub(crate) fn bool_tensor_reshape(
     tensor: DylibTensor,
@@ -2080,6 +2602,555 @@ pub(crate) fn bool_tensor_unfold(
     forward_unary_op(tensor, output_dtype, |runtime, handle| {
         runtime.bool_tensor_unfold(handle, dim, size, step)
     })
+}
+
+pub(crate) fn module_embedding(
+    weights: DylibTensor,
+    indices: DylibTensor,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device("module_embedding", &[&weights, &indices])?;
+
+    let runtime = get_runtime(weights.runtime_id)?;
+    let handle = runtime
+        .module_embedding(weights.handle, indices.handle)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(
+        &runtime,
+        &weights,
+        handle,
+        weights.dtype,
+    ))
+}
+
+pub(crate) fn module_embedding_backward(
+    weights: DylibTensor,
+    output_grad: DylibTensor,
+    indices: DylibTensor,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device(
+        "module_embedding_backward",
+        &[&weights, &output_grad, &indices],
+    )?;
+
+    let runtime = get_runtime(weights.runtime_id)?;
+    let handle = runtime
+        .module_embedding_backward(weights.handle, output_grad.handle, indices.handle)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(
+        &runtime,
+        &weights,
+        handle,
+        weights.dtype,
+    ))
+}
+
+pub(crate) fn module_conv1d(
+    x: DylibTensor,
+    weight: DylibTensor,
+    bias: Option<DylibTensor>,
+    options: ConvOptions<1>,
+) -> Result<DylibTensor, DylibError> {
+    let mut tensors = vec![&x, &weight];
+    if let Some(ref bias) = bias {
+        tensors.push(bias);
+    }
+    ensure_same_runtime_and_device("module_conv1d", &tensors)?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv1d(
+            x.handle,
+            weight.handle,
+            bias.as_ref().map(|value| value.handle),
+            options,
+        )
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv1d_x_backward(
+    x: DylibTensor,
+    weight: DylibTensor,
+    output_grad: DylibTensor,
+    options: ConvOptions<1>,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device("module_conv1d_x_backward", &[&x, &weight, &output_grad])?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv1d_x_backward(x.handle, weight.handle, output_grad.handle, options)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv1d_weight_backward(
+    x: DylibTensor,
+    weight: DylibTensor,
+    output_grad: DylibTensor,
+    options: ConvOptions<1>,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device(
+        "module_conv1d_weight_backward",
+        &[&x, &weight, &output_grad],
+    )?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv1d_weight_backward(x.handle, weight.handle, output_grad.handle, options)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv1d_bias_backward(
+    x: DylibTensor,
+    bias: DylibTensor,
+    output_grad: DylibTensor,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device("module_conv1d_bias_backward", &[&x, &bias, &output_grad])?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv1d_bias_backward(x.handle, bias.handle, output_grad.handle)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv2d_x_backward(
+    x: DylibTensor,
+    weight: DylibTensor,
+    output_grad: DylibTensor,
+    options: ConvOptions<2>,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device("module_conv2d_x_backward", &[&x, &weight, &output_grad])?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv2d_x_backward(x.handle, weight.handle, output_grad.handle, options)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv2d_weight_backward(
+    x: DylibTensor,
+    weight: DylibTensor,
+    output_grad: DylibTensor,
+    options: ConvOptions<2>,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device(
+        "module_conv2d_weight_backward",
+        &[&x, &weight, &output_grad],
+    )?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv2d_weight_backward(x.handle, weight.handle, output_grad.handle, options)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv2d_bias_backward(
+    x: DylibTensor,
+    bias: DylibTensor,
+    output_grad: DylibTensor,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device("module_conv2d_bias_backward", &[&x, &bias, &output_grad])?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv2d_bias_backward(x.handle, bias.handle, output_grad.handle)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv3d_x_backward(
+    x: DylibTensor,
+    weight: DylibTensor,
+    output_grad: DylibTensor,
+    options: ConvOptions<3>,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device("module_conv3d_x_backward", &[&x, &weight, &output_grad])?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv3d_x_backward(x.handle, weight.handle, output_grad.handle, options)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv3d_weight_backward(
+    x: DylibTensor,
+    weight: DylibTensor,
+    output_grad: DylibTensor,
+    options: ConvOptions<3>,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device(
+        "module_conv3d_weight_backward",
+        &[&x, &weight, &output_grad],
+    )?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv3d_weight_backward(x.handle, weight.handle, output_grad.handle, options)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv3d_bias_backward(
+    x: DylibTensor,
+    bias: DylibTensor,
+    output_grad: DylibTensor,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device("module_conv3d_bias_backward", &[&x, &bias, &output_grad])?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv3d_bias_backward(x.handle, bias.handle, output_grad.handle)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv_transpose1d(
+    x: DylibTensor,
+    weight: DylibTensor,
+    bias: Option<DylibTensor>,
+    options: ConvTransposeOptions<1>,
+) -> Result<DylibTensor, DylibError> {
+    let mut tensors = vec![&x, &weight];
+    if let Some(ref bias) = bias {
+        tensors.push(bias);
+    }
+    ensure_same_runtime_and_device("module_conv_transpose1d", &tensors)?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv_transpose1d(
+            x.handle,
+            weight.handle,
+            bias.as_ref().map(|value| value.handle),
+            options,
+        )
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv_transpose1d_x_backward(
+    weight: DylibTensor,
+    output_grad: DylibTensor,
+    options: ConvTransposeOptions<1>,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device(
+        "module_conv_transpose1d_x_backward",
+        &[&weight, &output_grad],
+    )?;
+
+    let runtime = get_runtime(weight.runtime_id)?;
+    let handle = runtime
+        .module_conv_transpose1d_x_backward(weight.handle, output_grad.handle, options)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &weight, handle, weight.dtype))
+}
+
+pub(crate) fn module_conv_transpose1d_weight_backward(
+    x: DylibTensor,
+    weight: DylibTensor,
+    output_grad: DylibTensor,
+    options: ConvTransposeOptions<1>,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device(
+        "module_conv_transpose1d_weight_backward",
+        &[&x, &weight, &output_grad],
+    )?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv_transpose1d_weight_backward(
+            x.handle,
+            weight.handle,
+            output_grad.handle,
+            options,
+        )
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv_transpose1d_bias_backward(
+    x: DylibTensor,
+    bias: DylibTensor,
+    output_grad: DylibTensor,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device(
+        "module_conv_transpose1d_bias_backward",
+        &[&x, &bias, &output_grad],
+    )?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv_transpose1d_bias_backward(x.handle, bias.handle, output_grad.handle)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv_transpose2d_x_backward(
+    weight: DylibTensor,
+    output_grad: DylibTensor,
+    options: ConvTransposeOptions<2>,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device(
+        "module_conv_transpose2d_x_backward",
+        &[&weight, &output_grad],
+    )?;
+
+    let runtime = get_runtime(weight.runtime_id)?;
+    let handle = runtime
+        .module_conv_transpose2d_x_backward(weight.handle, output_grad.handle, options)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &weight, handle, weight.dtype))
+}
+
+pub(crate) fn module_conv_transpose2d_weight_backward(
+    x: DylibTensor,
+    weight: DylibTensor,
+    output_grad: DylibTensor,
+    options: ConvTransposeOptions<2>,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device(
+        "module_conv_transpose2d_weight_backward",
+        &[&x, &weight, &output_grad],
+    )?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv_transpose2d_weight_backward(
+            x.handle,
+            weight.handle,
+            output_grad.handle,
+            options,
+        )
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv_transpose2d_bias_backward(
+    x: DylibTensor,
+    bias: DylibTensor,
+    output_grad: DylibTensor,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device(
+        "module_conv_transpose2d_bias_backward",
+        &[&x, &bias, &output_grad],
+    )?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv_transpose2d_bias_backward(x.handle, bias.handle, output_grad.handle)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv_transpose3d_x_backward(
+    weight: DylibTensor,
+    output_grad: DylibTensor,
+    options: ConvTransposeOptions<3>,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device(
+        "module_conv_transpose3d_x_backward",
+        &[&weight, &output_grad],
+    )?;
+
+    let runtime = get_runtime(weight.runtime_id)?;
+    let handle = runtime
+        .module_conv_transpose3d_x_backward(weight.handle, output_grad.handle, options)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &weight, handle, weight.dtype))
+}
+
+pub(crate) fn module_conv_transpose3d_weight_backward(
+    x: DylibTensor,
+    weight: DylibTensor,
+    output_grad: DylibTensor,
+    options: ConvTransposeOptions<3>,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device(
+        "module_conv_transpose3d_weight_backward",
+        &[&x, &weight, &output_grad],
+    )?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv_transpose3d_weight_backward(
+            x.handle,
+            weight.handle,
+            output_grad.handle,
+            options,
+        )
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_conv_transpose3d_bias_backward(
+    x: DylibTensor,
+    bias: DylibTensor,
+    output_grad: DylibTensor,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device(
+        "module_conv_transpose3d_bias_backward",
+        &[&x, &bias, &output_grad],
+    )?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_conv_transpose3d_bias_backward(x.handle, bias.handle, output_grad.handle)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_unfold4d(
+    x: DylibTensor,
+    kernel_size: [usize; 2],
+    options: UnfoldOptions,
+) -> Result<DylibTensor, DylibError> {
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_unfold4d(x.handle, kernel_size, options)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_avg_pool1d(
+    x: DylibTensor,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    count_include_pad: bool,
+    ceil_mode: bool,
+) -> Result<DylibTensor, DylibError> {
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_avg_pool1d(
+            x.handle,
+            kernel_size,
+            stride,
+            padding,
+            count_include_pad,
+            ceil_mode,
+        )
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_avg_pool1d_backward(
+    x: DylibTensor,
+    grad: DylibTensor,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    count_include_pad: bool,
+    ceil_mode: bool,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device("module_avg_pool1d_backward", &[&x, &grad])?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_avg_pool1d_backward(
+            x.handle,
+            grad.handle,
+            kernel_size,
+            stride,
+            padding,
+            count_include_pad,
+            ceil_mode,
+        )
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_adaptive_avg_pool1d(
+    x: DylibTensor,
+    output_size: usize,
+) -> Result<DylibTensor, DylibError> {
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_adaptive_avg_pool1d(x.handle, output_size)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_adaptive_avg_pool1d_backward(
+    x: DylibTensor,
+    grad: DylibTensor,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device("module_adaptive_avg_pool1d_backward", &[&x, &grad])?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_adaptive_avg_pool1d_backward(x.handle, grad.handle)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_max_pool1d(
+    x: DylibTensor,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    dilation: usize,
+    ceil_mode: bool,
+) -> Result<DylibTensor, DylibError> {
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_max_pool1d(x.handle, kernel_size, stride, padding, dilation, ceil_mode)
+        .map_err(map_call_error)?;
+    Ok(tensor_from_output(&runtime, &x, handle, x.dtype))
+}
+
+pub(crate) fn module_max_pool1d_with_indices<E: Send + Sync + 'static>(
+    x: DylibTensor,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    dilation: usize,
+    ceil_mode: bool,
+) -> Result<MaxPool1dWithIndices<super::backend::Dylib<E>>, DylibError> {
+    let runtime = get_runtime(x.runtime_id)?;
+    let handles = runtime
+        .module_max_pool1d_with_indices(x.handle, kernel_size, stride, padding, dilation, ceil_mode)
+        .map_err(map_call_error)?;
+
+    let output = tensor_from_output(&runtime, &x, handles.output, x.dtype);
+    let indices = tensor_from_output(&runtime, &x, handles.indices, IntDType::I64.into());
+    Ok(MaxPool1dWithIndices::new(output, indices))
+}
+
+pub(crate) fn module_max_pool1d_with_indices_backward<E: Send + Sync + 'static>(
+    x: DylibTensor,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    dilation: usize,
+    ceil_mode: bool,
+    output_grad: DylibTensor,
+    indices: DylibTensor,
+) -> Result<MaxPool1dBackward<super::backend::Dylib<E>>, DylibError> {
+    ensure_same_runtime_and_device(
+        "module_max_pool1d_with_indices_backward",
+        &[&x, &output_grad, &indices],
+    )?;
+
+    let runtime = get_runtime(x.runtime_id)?;
+    let handle = runtime
+        .module_max_pool1d_with_indices_backward(
+            x.handle,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            ceil_mode,
+            output_grad.handle,
+            indices.handle,
+        )
+        .map_err(map_call_error)?;
+    let x_grad = tensor_from_output(&runtime, &x, handle, x.dtype);
+    Ok(MaxPool1dBackward::new(x_grad))
 }
 
 pub(crate) fn module_conv2d(
@@ -2465,6 +3536,31 @@ pub(crate) fn module_rfft(
     let real = tensor_from_output(&runtime, &signal, handles.real, signal.dtype);
     let imag = tensor_from_output(&runtime, &signal, handles.imag, signal.dtype);
     Ok((real, imag))
+}
+
+define_scalar_same_dtype!(activation_leaky_relu, activation_leaky_relu);
+define_unary_same_dtype!(activation_relu, activation_relu);
+define_binary_same_dtype!(activation_relu_backward, activation_relu_backward);
+define_unary_same_dtype!(activation_gelu, activation_gelu);
+define_binary_same_dtype!(activation_prelu, activation_prelu);
+define_binary_same_dtype!(activation_gelu_backward, activation_gelu_backward);
+define_unary_same_dtype!(activation_sigmoid, activation_sigmoid);
+define_binary_same_dtype!(activation_sigmoid_backward, activation_sigmoid_backward);
+define_unary_same_dtype!(activation_log_sigmoid, activation_log_sigmoid);
+define_binary_same_dtype!(
+    activation_log_sigmoid_backward,
+    activation_log_sigmoid_backward
+);
+
+pub(crate) fn activation_hard_sigmoid(
+    tensor: DylibTensor,
+    alpha: Scalar,
+    beta: Scalar,
+) -> Result<DylibTensor, DylibError> {
+    let output_dtype = tensor.dtype;
+    forward_unary_op(tensor, output_dtype, |runtime, handle| {
+        runtime.activation_hard_sigmoid(handle, alpha, beta)
+    })
 }
 
 #[cfg(test)]

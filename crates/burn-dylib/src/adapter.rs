@@ -3,7 +3,7 @@ use burn_backend::{
     Scalar, Shape, Slice, TensorData, TensorMetadata,
     ops::{
         AttentionModuleOptions, ConvOptions, ConvTransposeOptions, DeformConvOptions,
-        InterpolateMode, InterpolateOptions,
+        InterpolateMode, InterpolateOptions, UnfoldOptions,
     },
     quantization::{
         BlockSize, QuantLevel, QuantMode, QuantParam, QuantScheme, QuantStore, QuantValue,
@@ -12,15 +12,18 @@ use burn_backend::{
 };
 
 use crate::{
-    ABI_QUANT_BLOCK_MAX_DIMS, AbiAttentionModuleOptions, AbiBoolDType, AbiConvOptions2,
-    AbiConvOptions3, AbiConvTransposeOptions2, AbiConvTransposeOptions3, AbiDeformConv2dBackward,
-    AbiDeformConvOptions2, AbiDistribution, AbiDistributionKind, AbiFloatDType, AbiIntDType,
-    AbiInterpolateMode, AbiInterpolateOptions, AbiMaxPool2dWithIndices, AbiQuantLevel,
-    AbiQuantMode, AbiQuantParam, AbiQuantScheme, AbiQuantStore, AbiQuantValue, AbiRfftOutput,
-    AbiScalar, AbiScalarKind, AbiSliceRef, BACKEND_PLUGIN_ABI_VERSION,
+    ABI_QUANT_BLOCK_MAX_DIMS, AbiAttentionModuleOptions, AbiBoolDType, AbiConvOptions1,
+    AbiConvOptions2, AbiConvOptions3, AbiConvTransposeOptions1, AbiConvTransposeOptions2,
+    AbiConvTransposeOptions3, AbiDeformConv2dBackward, AbiDeformConvOptions2, AbiDistribution,
+    AbiDistributionKind, AbiFloatDType, AbiIntDType, AbiInterpolateMode, AbiInterpolateOptions,
+    AbiMaxPool1dWithIndices, AbiMaxPool2dWithIndices, AbiQuantLevel, AbiQuantMode,
+    AbiQuantParam, AbiQuantScheme, AbiQuantStore, AbiQuantValue, AbiRfftOutput, AbiScalar,
+    AbiScalarKind, AbiSliceRef, AbiTensorWithIndices, AbiUnfoldOptions,
+    BACKEND_PLUGIN_ABI_VERSION,
     BACKEND_TENSOR_OPS_ABI_VERSION, BackendNameFn, BackendPluginV1, BackendTensorOpsV1,
     DeviceHandle, F32SliceRef, OwnedF32Buffer, OwnedU8Buffer, OwnedU64Buffer, OwnedUsizeBuffer,
-    PluginStatus, PluginStatusCode, TensorHandle, TensorShapeRef, U8SliceRef, U64SliceRef,
+    PluginStatus, PluginStatusCode, TensorHandle, TensorHandleRef, TensorShapeRef, U8SliceRef,
+    U64SliceRef,
 };
 use core::any::TypeId;
 use std::collections::HashMap;
@@ -456,6 +459,17 @@ fn try_slices(slices: AbiSliceRef) -> Result<Vec<Slice>, PluginStatus> {
         .collect())
 }
 
+fn try_tensor_handles(handles: TensorHandleRef) -> Result<Vec<TensorHandle>, PluginStatus> {
+    if handles.len == 0 {
+        return Ok(Vec::new());
+    }
+    if handles.ptr.is_null() {
+        return Err(invalid_argument());
+    }
+
+    Ok(unsafe { slice::from_raw_parts(handles.ptr, handles.len) }.to_vec())
+}
+
 fn scalar_from_abi(value: AbiScalar) -> Scalar {
     match value.kind {
         AbiScalarKind::Float => Scalar::Float(f64::from_bits(value.payload)),
@@ -626,6 +640,15 @@ fn quant_scheme_to_abi(scheme: QuantScheme) -> AbiQuantScheme {
     }
 }
 
+fn conv_options_1_from_abi(options: AbiConvOptions1) -> ConvOptions<1> {
+    ConvOptions::new(
+        options.stride,
+        options.padding,
+        options.dilation,
+        options.groups,
+    )
+}
+
 fn conv_options_2_from_abi(options: AbiConvOptions2) -> ConvOptions<2> {
     ConvOptions::new(
         options.stride,
@@ -664,6 +687,18 @@ fn conv_transpose_options_2_from_abi(options: AbiConvTransposeOptions2) -> ConvT
     )
 }
 
+fn conv_transpose_options_1_from_abi(
+    options: AbiConvTransposeOptions1,
+) -> ConvTransposeOptions<1> {
+    ConvTransposeOptions::new(
+        options.stride,
+        options.padding,
+        options.padding_out,
+        options.dilation,
+        options.groups,
+    )
+}
+
 fn conv_transpose_options_3_from_abi(options: AbiConvTransposeOptions3) -> ConvTransposeOptions<3> {
     ConvTransposeOptions::new(
         options.stride,
@@ -672,6 +707,10 @@ fn conv_transpose_options_3_from_abi(options: AbiConvTransposeOptions3) -> ConvT
         options.dilation,
         options.groups,
     )
+}
+
+fn unfold_options_from_abi(options: AbiUnfoldOptions) -> UnfoldOptions {
+    UnfoldOptions::new(options.stride, options.padding, options.dilation)
 }
 
 fn interpolate_mode_from_abi(mode: AbiInterpolateMode) -> InterpolateMode {
@@ -987,6 +1026,102 @@ unsafe extern "C" fn abi_float_tensor_empty<P: Backend>(
     })
 }
 
+unsafe extern "C" fn abi_float_tensor_zeros<P: Backend>(
+    device: DeviceHandle,
+    shape: TensorShapeRef,
+    dtype: AbiFloatDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let device_state = match adapter_state::<P>().lookup_device(device) {
+            Ok(device_state) => device_state,
+            Err(status) => return status,
+        };
+        let shape = match try_shape(shape) {
+            Ok(shape) => shape,
+            Err(status) => return status,
+        };
+
+        let out = P::float_zeros(shape, &device_state, float_dtype_from_abi(dtype));
+        let handle = adapter_state::<P>().insert_float(device, out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_float_tensor_ones<P: Backend>(
+    device: DeviceHandle,
+    shape: TensorShapeRef,
+    dtype: AbiFloatDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let device_state = match adapter_state::<P>().lookup_device(device) {
+            Ok(device_state) => device_state,
+            Err(status) => return status,
+        };
+        let shape = match try_shape(shape) {
+            Ok(shape) => shape,
+            Err(status) => return status,
+        };
+
+        let out = P::float_ones(shape, &device_state, float_dtype_from_abi(dtype));
+        let handle = adapter_state::<P>().insert_float(device, out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_float_tensor_full<P: Backend>(
+    device: DeviceHandle,
+    shape: TensorShapeRef,
+    value: AbiScalar,
+    dtype: AbiFloatDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let device_state = match adapter_state::<P>().lookup_device(device) {
+            Ok(device_state) => device_state,
+            Err(status) => return status,
+        };
+        let shape = match try_shape(shape) {
+            Ok(shape) => shape,
+            Err(status) => return status,
+        };
+
+        let out = P::float_full(
+            shape,
+            scalar_from_abi(value),
+            &device_state,
+            float_dtype_from_abi(dtype),
+        );
+        let handle = adapter_state::<P>().insert_float(device, out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
 unsafe extern "C" fn abi_float_tensor_into_int<P: Backend>(
     tensor: TensorHandle,
     out_dtype: AbiIntDType,
@@ -1248,6 +1383,274 @@ macro_rules! abi_float_arg_fn {
     };
 }
 
+macro_rules! abi_float_repeat_dim_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            dim: usize,
+            times: usize,
+            out_tensor: *mut TensorHandle,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensor.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_float(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let out = P::$backend_fn(tensor_state.tensor, dim, times);
+                let handle =
+                    adapter_state::<P>().insert_float(DeviceHandle(tensor_state.device_handle), out);
+
+                unsafe {
+                    *out_tensor = handle;
+                }
+                ok()
+            })
+        }
+    };
+}
+
+macro_rules! abi_float_clamp_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            min: AbiScalar,
+            max: AbiScalar,
+            out_tensor: *mut TensorHandle,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensor.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_float(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let out = P::$backend_fn(tensor_state.tensor, scalar_from_abi(min), scalar_from_abi(max));
+                let handle =
+                    adapter_state::<P>().insert_float(DeviceHandle(tensor_state.device_handle), out);
+
+                unsafe {
+                    *out_tensor = handle;
+                }
+                ok()
+            })
+        }
+    };
+}
+
+macro_rules! abi_float_bool_reduce_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            out_dtype: AbiBoolDType,
+            out_tensor: *mut TensorHandle,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensor.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_float(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let out = P::$backend_fn(tensor_state.tensor, bool_dtype_from_abi(out_dtype));
+                let handle =
+                    adapter_state::<P>().insert_bool(DeviceHandle(tensor_state.device_handle), out);
+
+                unsafe {
+                    *out_tensor = handle;
+                }
+                ok()
+            })
+        }
+    };
+}
+
+macro_rules! abi_float_bool_reduce_dim_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            dim: usize,
+            out_dtype: AbiBoolDType,
+            out_tensor: *mut TensorHandle,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensor.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_float(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let out = P::$backend_fn(
+                    tensor_state.tensor,
+                    dim,
+                    bool_dtype_from_abi(out_dtype),
+                );
+                let handle =
+                    adapter_state::<P>().insert_bool(DeviceHandle(tensor_state.device_handle), out);
+
+                unsafe {
+                    *out_tensor = handle;
+                }
+                ok()
+            })
+        }
+    };
+}
+
+macro_rules! abi_float_with_indices_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            dim: usize,
+            out_dtype: AbiIntDType,
+            out_tensors: *mut AbiTensorWithIndices,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensors.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_float(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let (values, indices) =
+                    P::$backend_fn(tensor_state.tensor, dim, int_dtype_from_abi(out_dtype));
+                let values =
+                    adapter_state::<P>().insert_float(DeviceHandle(tensor_state.device_handle), values);
+                let indices =
+                    adapter_state::<P>().insert_int(DeviceHandle(tensor_state.device_handle), indices);
+
+                unsafe {
+                    *out_tensors = AbiTensorWithIndices { values, indices };
+                }
+                ok()
+            })
+        }
+    };
+}
+
+macro_rules! abi_float_sort_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            dim: usize,
+            descending: u8,
+            out_tensor: *mut TensorHandle,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensor.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_float(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let out = P::$backend_fn(tensor_state.tensor, dim, descending != 0);
+                let handle =
+                    adapter_state::<P>().insert_float(DeviceHandle(tensor_state.device_handle), out);
+
+                unsafe {
+                    *out_tensor = handle;
+                }
+                ok()
+            })
+        }
+    };
+}
+
+macro_rules! abi_float_sort_with_indices_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            dim: usize,
+            descending: u8,
+            out_dtype: AbiIntDType,
+            out_tensors: *mut AbiTensorWithIndices,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensors.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_float(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let (values, indices) = P::$backend_fn(
+                    tensor_state.tensor,
+                    dim,
+                    descending != 0,
+                    int_dtype_from_abi(out_dtype),
+                );
+                let values =
+                    adapter_state::<P>().insert_float(DeviceHandle(tensor_state.device_handle), values);
+                let indices =
+                    adapter_state::<P>().insert_int(DeviceHandle(tensor_state.device_handle), indices);
+
+                unsafe {
+                    *out_tensors = AbiTensorWithIndices { values, indices };
+                }
+                ok()
+            })
+        }
+    };
+}
+
+macro_rules! abi_float_argsort_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            dim: usize,
+            descending: u8,
+            out_dtype: AbiIntDType,
+            out_tensor: *mut TensorHandle,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensor.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_float(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let out = P::$backend_fn(
+                    tensor_state.tensor,
+                    dim,
+                    descending != 0,
+                    int_dtype_from_abi(out_dtype),
+                );
+                let handle =
+                    adapter_state::<P>().insert_int(DeviceHandle(tensor_state.device_handle), out);
+
+                unsafe {
+                    *out_tensor = handle;
+                }
+                ok()
+            })
+        }
+    };
+}
+
 abi_float_binary_fn!(abi_float_tensor_add, float_add);
 abi_float_scalar_fn!(abi_float_tensor_add_scalar, float_add_scalar);
 abi_float_binary_fn!(abi_float_tensor_sub, float_sub);
@@ -1309,6 +1712,158 @@ abi_float_unary_fn!(abi_float_tensor_trunc, float_trunc);
 abi_float_unary_fn!(abi_float_tensor_erf, float_erf);
 abi_float_arg_fn!(abi_float_tensor_argmax, float_argmax);
 abi_float_arg_fn!(abi_float_tensor_argmin, float_argmin);
+abi_float_repeat_dim_fn!(abi_float_tensor_repeat_dim, float_repeat_dim);
+abi_float_scalar_fn!(abi_float_tensor_clamp_min, float_clamp_min);
+abi_float_scalar_fn!(abi_float_tensor_clamp_max, float_clamp_max);
+abi_float_clamp_fn!(abi_float_tensor_clamp, float_clamp);
+abi_float_unary_fn!(abi_float_tensor_neg, float_neg);
+abi_float_unary_fn!(abi_float_tensor_transpose, float_transpose);
+abi_float_compare_binary_fn!(abi_float_tensor_not_equal, float_not_equal);
+abi_float_compare_scalar_fn!(abi_float_tensor_not_equal_elem, float_not_equal_elem);
+abi_float_unary_fn!(abi_float_tensor_mean, float_mean);
+abi_float_scalar_fn!(abi_float_tensor_powi_scalar, float_powi_scalar_impl);
+abi_float_unary_fn!(abi_float_tensor_max, float_max);
+abi_float_dim_fn!(abi_float_tensor_max_dim, float_max_dim);
+abi_float_with_indices_fn!(abi_float_tensor_max_dim_with_indices, float_max_dim_with_indices);
+abi_float_unary_fn!(abi_float_tensor_min, float_min);
+abi_float_dim_fn!(abi_float_tensor_min_dim, float_min_dim);
+abi_float_with_indices_fn!(abi_float_tensor_min_dim_with_indices, float_min_dim_with_indices);
+abi_float_unary_fn!(abi_float_tensor_max_abs, float_max_abs);
+abi_float_dim_fn!(abi_float_tensor_max_abs_dim, float_max_abs_dim);
+abi_float_bool_reduce_fn!(abi_float_tensor_any, float_any);
+abi_float_bool_reduce_dim_fn!(abi_float_tensor_any_dim, float_any_dim);
+abi_float_bool_reduce_fn!(abi_float_tensor_all, float_all);
+abi_float_bool_reduce_dim_fn!(abi_float_tensor_all_dim, float_all_dim);
+abi_float_unary_fn!(abi_float_tensor_sign, float_sign);
+abi_float_sort_fn!(abi_float_tensor_sort, float_sort);
+abi_float_sort_with_indices_fn!(abi_float_tensor_sort_with_indices, float_sort_with_indices);
+abi_float_argsort_fn!(abi_float_tensor_argsort, float_argsort);
+abi_float_bool_reduce_fn!(abi_float_tensor_is_nan, float_is_nan);
+abi_float_bool_reduce_fn!(abi_float_tensor_is_inf, float_is_inf);
+abi_float_scalar_fn!(abi_activation_leaky_relu, leaky_relu);
+abi_float_unary_fn!(abi_activation_relu, relu);
+abi_float_binary_fn!(abi_activation_relu_backward, relu_backward);
+abi_float_unary_fn!(abi_activation_gelu, gelu);
+abi_float_binary_fn!(abi_activation_prelu, prelu);
+abi_float_binary_fn!(abi_activation_gelu_backward, gelu_backward);
+abi_float_unary_fn!(abi_activation_sigmoid, sigmoid);
+abi_float_binary_fn!(abi_activation_sigmoid_backward, sigmoid_backward);
+abi_float_unary_fn!(abi_activation_log_sigmoid, log_sigmoid);
+abi_float_binary_fn!(abi_activation_log_sigmoid_backward, log_sigmoid_backward);
+
+unsafe extern "C" fn abi_activation_hard_sigmoid<P: Backend>(
+    tensor: TensorHandle,
+    alpha: AbiScalar,
+    beta: AbiScalar,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let tensor_state = match adapter_state::<P>().lookup_float(tensor) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        let out = P::hard_sigmoid(
+            tensor_state.tensor,
+            scalar_from_abi(alpha),
+            scalar_from_abi(beta),
+        );
+        let handle =
+            adapter_state::<P>().insert_float(DeviceHandle(tensor_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_float_tensor_powi<P: Backend>(
+    lhs: TensorHandle,
+    rhs: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let lhs_state = match adapter_state::<P>().lookup_float(lhs) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let rhs_state = match adapter_state::<P>().lookup_int(rhs) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if lhs_state.device_handle != rhs_state.device_handle {
+            return invalid_argument();
+        }
+
+        let out = P::float_powi(lhs_state.tensor, rhs_state.tensor);
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(lhs_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_float_tensor_cat<P: Backend>(
+    tensors: TensorHandleRef,
+    dim: usize,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let handles = match try_tensor_handles(tensors) {
+            Ok(handles) => handles,
+            Err(status) => return status,
+        };
+        if handles.is_empty() {
+            return invalid_argument();
+        }
+
+        let first_state = match adapter_state::<P>().lookup_float(handles[0]) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let device_handle = first_state.device_handle;
+
+        let mut tensors = Vec::with_capacity(handles.len());
+        tensors.push(first_state.tensor);
+
+        for &handle in handles.iter().skip(1) {
+            let state = match adapter_state::<P>().lookup_float(handle) {
+                Ok(state) => state,
+                Err(status) => return status,
+            };
+
+            if state.device_handle != device_handle {
+                return invalid_argument();
+            }
+
+            tensors.push(state.tensor);
+        }
+
+        let out = P::float_cat(tensors, dim);
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
 
 unsafe extern "C" fn abi_float_tensor_cross<P: Backend>(
     lhs: TensorHandle,
@@ -2640,6 +3195,487 @@ abi_int_scalar_fn!(
     bitwise_right_shift_scalar
 );
 
+macro_rules! abi_int_repeat_dim_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            dim: usize,
+            times: usize,
+            out_tensor: *mut TensorHandle,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensor.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_int(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let out = P::$backend_fn(tensor_state.tensor, dim, times);
+                let handle =
+                    adapter_state::<P>().insert_int(DeviceHandle(tensor_state.device_handle), out);
+
+                unsafe {
+                    *out_tensor = handle;
+                }
+                ok()
+            })
+        }
+    };
+}
+
+macro_rules! abi_int_clamp_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            min: AbiScalar,
+            max: AbiScalar,
+            out_tensor: *mut TensorHandle,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensor.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_int(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let out = P::$backend_fn(tensor_state.tensor, scalar_from_abi(min), scalar_from_abi(max));
+                let handle =
+                    adapter_state::<P>().insert_int(DeviceHandle(tensor_state.device_handle), out);
+
+                unsafe {
+                    *out_tensor = handle;
+                }
+                ok()
+            })
+        }
+    };
+}
+
+macro_rules! abi_int_bool_reduce_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            out_dtype: AbiBoolDType,
+            out_tensor: *mut TensorHandle,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensor.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_int(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let out = P::$backend_fn(tensor_state.tensor, bool_dtype_from_abi(out_dtype));
+                let handle =
+                    adapter_state::<P>().insert_bool(DeviceHandle(tensor_state.device_handle), out);
+
+                unsafe {
+                    *out_tensor = handle;
+                }
+                ok()
+            })
+        }
+    };
+}
+
+macro_rules! abi_int_bool_reduce_dim_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            dim: usize,
+            out_dtype: AbiBoolDType,
+            out_tensor: *mut TensorHandle,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensor.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_int(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let out = P::$backend_fn(
+                    tensor_state.tensor,
+                    dim,
+                    bool_dtype_from_abi(out_dtype),
+                );
+                let handle =
+                    adapter_state::<P>().insert_bool(DeviceHandle(tensor_state.device_handle), out);
+
+                unsafe {
+                    *out_tensor = handle;
+                }
+                ok()
+            })
+        }
+    };
+}
+
+macro_rules! abi_int_with_indices_no_dtype_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            dim: usize,
+            out_tensors: *mut AbiTensorWithIndices,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensors.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_int(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let (values, indices) = P::$backend_fn(tensor_state.tensor, dim);
+                let values =
+                    adapter_state::<P>().insert_int(DeviceHandle(tensor_state.device_handle), values);
+                let indices =
+                    adapter_state::<P>().insert_int(DeviceHandle(tensor_state.device_handle), indices);
+
+                unsafe {
+                    *out_tensors = AbiTensorWithIndices { values, indices };
+                }
+                ok()
+            })
+        }
+    };
+}
+
+macro_rules! abi_int_sort_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            dim: usize,
+            descending: u8,
+            out_tensor: *mut TensorHandle,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensor.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_int(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let out = P::$backend_fn(tensor_state.tensor, dim, descending != 0);
+                let handle =
+                    adapter_state::<P>().insert_int(DeviceHandle(tensor_state.device_handle), out);
+
+                unsafe {
+                    *out_tensor = handle;
+                }
+                ok()
+            })
+        }
+    };
+}
+
+macro_rules! abi_int_sort_with_indices_no_dtype_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            dim: usize,
+            descending: u8,
+            out_tensors: *mut AbiTensorWithIndices,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensors.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_int(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let (values, indices) = P::$backend_fn(tensor_state.tensor, dim, descending != 0);
+                let values =
+                    adapter_state::<P>().insert_int(DeviceHandle(tensor_state.device_handle), values);
+                let indices =
+                    adapter_state::<P>().insert_int(DeviceHandle(tensor_state.device_handle), indices);
+
+                unsafe {
+                    *out_tensors = AbiTensorWithIndices { values, indices };
+                }
+                ok()
+            })
+        }
+    };
+}
+
+macro_rules! abi_int_argsort_no_dtype_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            dim: usize,
+            descending: u8,
+            out_tensor: *mut TensorHandle,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensor.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_int(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let out = P::$backend_fn(tensor_state.tensor, dim, descending != 0);
+                let handle =
+                    adapter_state::<P>().insert_int(DeviceHandle(tensor_state.device_handle), out);
+
+                unsafe {
+                    *out_tensor = handle;
+                }
+                ok()
+            })
+        }
+    };
+}
+
+unsafe extern "C" fn abi_int_tensor_zeros<P: Backend>(
+    device: DeviceHandle,
+    shape: TensorShapeRef,
+    dtype: AbiIntDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let device_state = match adapter_state::<P>().lookup_device(device) {
+            Ok(device_state) => device_state,
+            Err(status) => return status,
+        };
+        let shape = match try_shape(shape) {
+            Ok(shape) => shape,
+            Err(status) => return status,
+        };
+
+        let out = P::int_zeros(shape, &device_state, int_dtype_from_abi(dtype));
+        let handle = adapter_state::<P>().insert_int(device, out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_int_tensor_ones<P: Backend>(
+    device: DeviceHandle,
+    shape: TensorShapeRef,
+    dtype: AbiIntDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let device_state = match adapter_state::<P>().lookup_device(device) {
+            Ok(device_state) => device_state,
+            Err(status) => return status,
+        };
+        let shape = match try_shape(shape) {
+            Ok(shape) => shape,
+            Err(status) => return status,
+        };
+
+        let out = P::int_ones(shape, &device_state, int_dtype_from_abi(dtype));
+        let handle = adapter_state::<P>().insert_int(device, out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_int_tensor_full<P: Backend>(
+    device: DeviceHandle,
+    shape: TensorShapeRef,
+    value: AbiScalar,
+    dtype: AbiIntDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let device_state = match adapter_state::<P>().lookup_device(device) {
+            Ok(device_state) => device_state,
+            Err(status) => return status,
+        };
+        let shape = match try_shape(shape) {
+            Ok(shape) => shape,
+            Err(status) => return status,
+        };
+
+        let out = P::int_full(
+            shape,
+            scalar_from_abi(value),
+            &device_state,
+            int_dtype_from_abi(dtype),
+        );
+        let handle = adapter_state::<P>().insert_int(device, out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_int_tensor_cat<P: Backend>(
+    tensors: TensorHandleRef,
+    dim: usize,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let handles = match try_tensor_handles(tensors) {
+            Ok(handles) => handles,
+            Err(status) => return status,
+        };
+        if handles.is_empty() {
+            return invalid_argument();
+        }
+
+        let first_state = match adapter_state::<P>().lookup_int(handles[0]) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let device_handle = first_state.device_handle;
+
+        let mut tensors = Vec::with_capacity(handles.len());
+        tensors.push(first_state.tensor);
+
+        for &handle in handles.iter().skip(1) {
+            let state = match adapter_state::<P>().lookup_int(handle) {
+                Ok(state) => state,
+                Err(status) => return status,
+            };
+
+            if state.device_handle != device_handle {
+                return invalid_argument();
+            }
+
+            tensors.push(state.tensor);
+        }
+
+        let out = P::int_cat(tensors, dim);
+        let handle = adapter_state::<P>().insert_int(DeviceHandle(device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_int_tensor_arange_step<P: Backend>(
+    start: i64,
+    end: i64,
+    step: usize,
+    device: DeviceHandle,
+    dtype: AbiIntDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let device_state = match adapter_state::<P>().lookup_device(device) {
+            Ok(device_state) => device_state,
+            Err(status) => return status,
+        };
+        let out = P::int_arange_step(start..end, step, &device_state, int_dtype_from_abi(dtype));
+        let handle = adapter_state::<P>().insert_int(device, out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_int_tensor_arange<P: Backend>(
+    start: i64,
+    end: i64,
+    device: DeviceHandle,
+    dtype: AbiIntDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let device_state = match adapter_state::<P>().lookup_device(device) {
+            Ok(device_state) => device_state,
+            Err(status) => return status,
+        };
+        let out = P::int_arange(start..end, &device_state, int_dtype_from_abi(dtype));
+        let handle = adapter_state::<P>().insert_int(device, out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+abi_int_repeat_dim_fn!(abi_int_tensor_repeat_dim, int_repeat_dim);
+abi_int_compare_binary_fn!(abi_int_tensor_not_equal, int_not_equal);
+abi_int_compare_scalar_fn!(abi_int_tensor_not_equal_elem, int_not_equal_elem);
+abi_int_binary_fn!(abi_int_tensor_powi, int_powi);
+abi_int_scalar_fn!(abi_int_tensor_powi_scalar, int_powi_scalar_impl);
+abi_int_scalar_fn!(abi_int_tensor_clamp_min, int_clamp_min);
+abi_int_scalar_fn!(abi_int_tensor_clamp_max, int_clamp_max);
+abi_int_clamp_fn!(abi_int_tensor_clamp, int_clamp);
+abi_int_unary_fn!(abi_int_tensor_neg, int_neg);
+abi_int_unary_fn!(abi_int_tensor_mean, int_mean);
+abi_int_unary_fn!(abi_int_tensor_max, int_max);
+abi_int_dim_fn!(abi_int_tensor_max_dim, int_max_dim);
+abi_int_with_indices_no_dtype_fn!(abi_int_tensor_max_dim_with_indices, int_max_dim_with_indices);
+abi_int_unary_fn!(abi_int_tensor_max_abs, int_max_abs);
+abi_int_dim_fn!(abi_int_tensor_max_abs_dim, int_max_abs_dim);
+abi_int_unary_fn!(abi_int_tensor_min, int_min);
+abi_int_dim_fn!(abi_int_tensor_min_dim, int_min_dim);
+abi_int_with_indices_no_dtype_fn!(abi_int_tensor_min_dim_with_indices, int_min_dim_with_indices);
+abi_int_unary_fn!(abi_int_tensor_transpose, int_transpose);
+abi_int_bool_reduce_fn!(abi_int_tensor_any, int_any);
+abi_int_bool_reduce_dim_fn!(abi_int_tensor_any_dim, int_any_dim);
+abi_int_bool_reduce_fn!(abi_int_tensor_all, int_all);
+abi_int_bool_reduce_dim_fn!(abi_int_tensor_all_dim, int_all_dim);
+abi_int_unary_fn!(abi_int_tensor_sign, int_sign);
+abi_int_sort_fn!(abi_int_tensor_sort, int_sort);
+abi_int_sort_with_indices_no_dtype_fn!(abi_int_tensor_sort_with_indices, int_sort_with_indices);
+abi_int_argsort_no_dtype_fn!(abi_int_tensor_argsort, int_argsort);
+
 macro_rules! abi_bool_unary_fn {
     ($fn_name:ident, $backend_fn:ident) => {
         unsafe extern "C" fn $fn_name<P: Backend>(
@@ -2737,11 +3773,131 @@ macro_rules! abi_bool_scalar_fn {
     };
 }
 
+macro_rules! abi_bool_dim_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            dim: usize,
+            out_tensor: *mut TensorHandle,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensor.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_bool(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let out = P::$backend_fn(tensor_state.tensor, dim);
+                let handle =
+                    adapter_state::<P>().insert_bool(DeviceHandle(tensor_state.device_handle), out);
+
+                unsafe {
+                    *out_tensor = handle;
+                }
+                ok()
+            })
+        }
+    };
+}
+
+macro_rules! abi_bool_repeat_dim_fn {
+    ($fn_name:ident, $backend_fn:ident) => {
+        unsafe extern "C" fn $fn_name<P: Backend>(
+            tensor: TensorHandle,
+            dim: usize,
+            times: usize,
+            out_tensor: *mut TensorHandle,
+        ) -> PluginStatus {
+            with_boundary(|| {
+                if out_tensor.is_null() {
+                    return invalid_argument();
+                }
+
+                let tensor_state = match adapter_state::<P>().lookup_bool(tensor) {
+                    Ok(state) => state,
+                    Err(status) => return status,
+                };
+
+                let out = P::$backend_fn(tensor_state.tensor, dim, times);
+                let handle =
+                    adapter_state::<P>().insert_bool(DeviceHandle(tensor_state.device_handle), out);
+
+                unsafe {
+                    *out_tensor = handle;
+                }
+                ok()
+            })
+        }
+    };
+}
+
+unsafe extern "C" fn abi_bool_tensor_cat<P: Backend>(
+    tensors: TensorHandleRef,
+    dim: usize,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let handles = match try_tensor_handles(tensors) {
+            Ok(handles) => handles,
+            Err(status) => return status,
+        };
+        if handles.is_empty() {
+            return invalid_argument();
+        }
+
+        let first_state = match adapter_state::<P>().lookup_bool(handles[0]) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let device_handle = first_state.device_handle;
+
+        let mut tensors = Vec::with_capacity(handles.len());
+        tensors.push(first_state.tensor);
+
+        for &handle in handles.iter().skip(1) {
+            let state = match adapter_state::<P>().lookup_bool(handle) {
+                Ok(state) => state,
+                Err(status) => return status,
+            };
+
+            if state.device_handle != device_handle {
+                return invalid_argument();
+            }
+
+            tensors.push(state.tensor);
+        }
+
+        let out = P::bool_cat(tensors, dim);
+        let handle = adapter_state::<P>().insert_bool(DeviceHandle(device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
 abi_bool_binary_fn!(abi_bool_tensor_equal, bool_equal);
 abi_bool_scalar_fn!(abi_bool_tensor_equal_elem, bool_equal_elem);
 abi_bool_unary_fn!(abi_bool_tensor_not, bool_not);
 abi_bool_binary_fn!(abi_bool_tensor_and, bool_and);
 abi_bool_binary_fn!(abi_bool_tensor_or, bool_or);
+abi_bool_repeat_dim_fn!(abi_bool_tensor_repeat_dim, bool_repeat_dim);
+abi_bool_binary_fn!(abi_bool_tensor_not_equal, bool_not_equal);
+abi_bool_scalar_fn!(abi_bool_tensor_not_equal_elem, bool_not_equal_elem);
+abi_bool_binary_fn!(abi_bool_tensor_xor, bool_xor);
+abi_bool_unary_fn!(abi_bool_tensor_transpose, bool_transpose);
+abi_bool_unary_fn!(abi_bool_tensor_any, bool_any);
+abi_bool_dim_fn!(abi_bool_tensor_any_dim, bool_any_dim);
+abi_bool_unary_fn!(abi_bool_tensor_all, bool_all);
+abi_bool_dim_fn!(abi_bool_tensor_all_dim, bool_all_dim);
 
 unsafe extern "C" fn abi_int_tensor_swap_dims<P: Backend>(
     tensor: TensorHandle,
@@ -4090,6 +5246,1260 @@ unsafe extern "C" fn abi_q_tensor_slice<P: Backend>(
     })
 }
 
+unsafe extern "C" fn abi_module_embedding<P: Backend>(
+    weights: TensorHandle,
+    indices: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let weights_state = match adapter_state::<P>().lookup_float(weights) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let indices_state = match adapter_state::<P>().lookup_int(indices) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        if weights_state.device_handle != indices_state.device_handle {
+            return invalid_argument();
+        }
+
+        let out = P::embedding(weights_state.tensor, indices_state.tensor);
+        let handle =
+            adapter_state::<P>().insert_float(DeviceHandle(weights_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_embedding_backward<P: Backend>(
+    weights: TensorHandle,
+    output_grad: TensorHandle,
+    indices: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let weights_state = match adapter_state::<P>().lookup_float(weights) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let indices_state = match adapter_state::<P>().lookup_int(indices) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if weights_state.device_handle != output_grad_state.device_handle
+            || weights_state.device_handle != indices_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::embedding_backward(
+            weights_state.tensor,
+            output_grad_state.tensor,
+            indices_state.tensor,
+        );
+        let handle =
+            adapter_state::<P>().insert_float(DeviceHandle(weights_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv1d<P: Backend>(
+    x: TensorHandle,
+    weight: TensorHandle,
+    bias: TensorHandle,
+    options: AbiConvOptions1,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let weight_state = match adapter_state::<P>().lookup_float(weight) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let bias_state = match optional_float_state::<P>(bias) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != weight_state.device_handle
+            || bias_state
+                .as_ref()
+                .is_some_and(|state| state.device_handle != x_state.device_handle)
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv1d(
+            x_state.tensor,
+            weight_state.tensor,
+            bias_state.map(|state| state.tensor),
+            conv_options_1_from_abi(options),
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv1d_x_backward<P: Backend>(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvOptions1,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let weight_state = match adapter_state::<P>().lookup_float(weight) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != weight_state.device_handle
+            || x_state.device_handle != output_grad_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv1d_x_backward(
+            x_state.tensor,
+            weight_state.tensor,
+            output_grad_state.tensor,
+            conv_options_1_from_abi(options),
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv1d_weight_backward<P: Backend>(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvOptions1,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let weight_state = match adapter_state::<P>().lookup_float(weight) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != weight_state.device_handle
+            || x_state.device_handle != output_grad_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv1d_weight_backward(
+            x_state.tensor,
+            weight_state.tensor,
+            output_grad_state.tensor,
+            conv_options_1_from_abi(options),
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv1d_bias_backward<P: Backend>(
+    x: TensorHandle,
+    bias: TensorHandle,
+    output_grad: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let bias_state = match adapter_state::<P>().lookup_float(bias) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != bias_state.device_handle
+            || x_state.device_handle != output_grad_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv1d_bias_backward(x_state.tensor, bias_state.tensor, output_grad_state.tensor);
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv2d_x_backward<P: Backend>(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvOptions2,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let weight_state = match adapter_state::<P>().lookup_float(weight) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != weight_state.device_handle
+            || x_state.device_handle != output_grad_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv2d_x_backward(
+            x_state.tensor,
+            weight_state.tensor,
+            output_grad_state.tensor,
+            conv_options_2_from_abi(options),
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv2d_weight_backward<P: Backend>(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvOptions2,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let weight_state = match adapter_state::<P>().lookup_float(weight) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != weight_state.device_handle
+            || x_state.device_handle != output_grad_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv2d_weight_backward(
+            x_state.tensor,
+            weight_state.tensor,
+            output_grad_state.tensor,
+            conv_options_2_from_abi(options),
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv2d_bias_backward<P: Backend>(
+    x: TensorHandle,
+    bias: TensorHandle,
+    output_grad: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let bias_state = match adapter_state::<P>().lookup_float(bias) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != bias_state.device_handle
+            || x_state.device_handle != output_grad_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv2d_bias_backward(x_state.tensor, bias_state.tensor, output_grad_state.tensor);
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv3d_x_backward<P: Backend>(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvOptions3,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let weight_state = match adapter_state::<P>().lookup_float(weight) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != weight_state.device_handle
+            || x_state.device_handle != output_grad_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv3d_x_backward(
+            x_state.tensor,
+            weight_state.tensor,
+            output_grad_state.tensor,
+            conv_options_3_from_abi(options),
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv3d_weight_backward<P: Backend>(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvOptions3,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let weight_state = match adapter_state::<P>().lookup_float(weight) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != weight_state.device_handle
+            || x_state.device_handle != output_grad_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv3d_weight_backward(
+            x_state.tensor,
+            weight_state.tensor,
+            output_grad_state.tensor,
+            conv_options_3_from_abi(options),
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv3d_bias_backward<P: Backend>(
+    x: TensorHandle,
+    bias: TensorHandle,
+    output_grad: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let bias_state = match adapter_state::<P>().lookup_float(bias) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != bias_state.device_handle
+            || x_state.device_handle != output_grad_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv3d_bias_backward(x_state.tensor, bias_state.tensor, output_grad_state.tensor);
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv_transpose1d<P: Backend>(
+    x: TensorHandle,
+    weight: TensorHandle,
+    bias: TensorHandle,
+    options: AbiConvTransposeOptions1,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let weight_state = match adapter_state::<P>().lookup_float(weight) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let bias_state = match optional_float_state::<P>(bias) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != weight_state.device_handle
+            || bias_state
+                .as_ref()
+                .is_some_and(|state| state.device_handle != x_state.device_handle)
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv_transpose1d(
+            x_state.tensor,
+            weight_state.tensor,
+            bias_state.map(|state| state.tensor),
+            conv_transpose_options_1_from_abi(options),
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv_transpose1d_x_backward<P: Backend>(
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvTransposeOptions1,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let weight_state = match adapter_state::<P>().lookup_float(weight) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if weight_state.device_handle != output_grad_state.device_handle {
+            return invalid_argument();
+        }
+
+        let out = P::conv_transpose1d_x_backward(
+            weight_state.tensor,
+            output_grad_state.tensor,
+            conv_transpose_options_1_from_abi(options),
+        );
+        let handle =
+            adapter_state::<P>().insert_float(DeviceHandle(weight_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv_transpose1d_weight_backward<P: Backend>(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvTransposeOptions1,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let weight_state = match adapter_state::<P>().lookup_float(weight) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != weight_state.device_handle
+            || x_state.device_handle != output_grad_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv_transpose1d_weight_backward(
+            x_state.tensor,
+            weight_state.tensor,
+            output_grad_state.tensor,
+            conv_transpose_options_1_from_abi(options),
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv_transpose1d_bias_backward<P: Backend>(
+    x: TensorHandle,
+    bias: TensorHandle,
+    output_grad: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let bias_state = match adapter_state::<P>().lookup_float(bias) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != bias_state.device_handle
+            || x_state.device_handle != output_grad_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv_transpose1d_bias_backward(
+            x_state.tensor,
+            bias_state.tensor,
+            output_grad_state.tensor,
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv_transpose2d_x_backward<P: Backend>(
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvTransposeOptions2,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let weight_state = match adapter_state::<P>().lookup_float(weight) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if weight_state.device_handle != output_grad_state.device_handle {
+            return invalid_argument();
+        }
+
+        let out = P::conv_transpose2d_x_backward(
+            weight_state.tensor,
+            output_grad_state.tensor,
+            conv_transpose_options_2_from_abi(options),
+        );
+        let handle =
+            adapter_state::<P>().insert_float(DeviceHandle(weight_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv_transpose2d_weight_backward<P: Backend>(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvTransposeOptions2,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let weight_state = match adapter_state::<P>().lookup_float(weight) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != weight_state.device_handle
+            || x_state.device_handle != output_grad_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv_transpose2d_weight_backward(
+            x_state.tensor,
+            weight_state.tensor,
+            output_grad_state.tensor,
+            conv_transpose_options_2_from_abi(options),
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv_transpose2d_bias_backward<P: Backend>(
+    x: TensorHandle,
+    bias: TensorHandle,
+    output_grad: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let bias_state = match adapter_state::<P>().lookup_float(bias) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != bias_state.device_handle
+            || x_state.device_handle != output_grad_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv_transpose2d_bias_backward(
+            x_state.tensor,
+            bias_state.tensor,
+            output_grad_state.tensor,
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv_transpose3d_x_backward<P: Backend>(
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvTransposeOptions3,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let weight_state = match adapter_state::<P>().lookup_float(weight) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if weight_state.device_handle != output_grad_state.device_handle {
+            return invalid_argument();
+        }
+
+        let out = P::conv_transpose3d_x_backward(
+            weight_state.tensor,
+            output_grad_state.tensor,
+            conv_transpose_options_3_from_abi(options),
+        );
+        let handle =
+            adapter_state::<P>().insert_float(DeviceHandle(weight_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv_transpose3d_weight_backward<P: Backend>(
+    x: TensorHandle,
+    weight: TensorHandle,
+    output_grad: TensorHandle,
+    options: AbiConvTransposeOptions3,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let weight_state = match adapter_state::<P>().lookup_float(weight) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != weight_state.device_handle
+            || x_state.device_handle != output_grad_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv_transpose3d_weight_backward(
+            x_state.tensor,
+            weight_state.tensor,
+            output_grad_state.tensor,
+            conv_transpose_options_3_from_abi(options),
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_conv_transpose3d_bias_backward<P: Backend>(
+    x: TensorHandle,
+    bias: TensorHandle,
+    output_grad: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let bias_state = match adapter_state::<P>().lookup_float(bias) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != bias_state.device_handle
+            || x_state.device_handle != output_grad_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::conv_transpose3d_bias_backward(
+            x_state.tensor,
+            bias_state.tensor,
+            output_grad_state.tensor,
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+#[allow(improper_ctypes_definitions)]
+unsafe extern "C" fn abi_module_unfold4d<P: Backend>(
+    x: TensorHandle,
+    kernel_size: [usize; 2],
+    options: AbiUnfoldOptions,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        let out = P::unfold4d(x_state.tensor, kernel_size, unfold_options_from_abi(options));
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_avg_pool1d<P: Backend>(
+    x: TensorHandle,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    count_include_pad: u8,
+    ceil_mode: u8,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        let out = P::avg_pool1d(
+            x_state.tensor,
+            kernel_size,
+            stride,
+            padding,
+            count_include_pad != 0,
+            ceil_mode != 0,
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_avg_pool1d_backward<P: Backend>(
+    x: TensorHandle,
+    grad: TensorHandle,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    count_include_pad: u8,
+    ceil_mode: u8,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let grad_state = match adapter_state::<P>().lookup_float(grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != grad_state.device_handle {
+            return invalid_argument();
+        }
+
+        let out = P::avg_pool1d_backward(
+            x_state.tensor,
+            grad_state.tensor,
+            kernel_size,
+            stride,
+            padding,
+            count_include_pad != 0,
+            ceil_mode != 0,
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_adaptive_avg_pool1d<P: Backend>(
+    x: TensorHandle,
+    output_size: usize,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        let out = P::adaptive_avg_pool1d(x_state.tensor, output_size);
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_adaptive_avg_pool1d_backward<P: Backend>(
+    x: TensorHandle,
+    grad: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let grad_state = match adapter_state::<P>().lookup_float(grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != grad_state.device_handle {
+            return invalid_argument();
+        }
+
+        let out = P::adaptive_avg_pool1d_backward(x_state.tensor, grad_state.tensor);
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_max_pool1d<P: Backend>(
+    x: TensorHandle,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    dilation: usize,
+    ceil_mode: u8,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        let out = P::max_pool1d(
+            x_state.tensor,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            ceil_mode != 0,
+        );
+        let handle = adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_max_pool1d_with_indices<P: Backend>(
+    x: TensorHandle,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    dilation: usize,
+    ceil_mode: u8,
+    out_tensors: *mut AbiMaxPool1dWithIndices,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensors.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        let out = P::max_pool1d_with_indices(
+            x_state.tensor,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            ceil_mode != 0,
+        );
+        let output =
+            adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out.output);
+        let indices =
+            adapter_state::<P>().insert_int(DeviceHandle(x_state.device_handle), out.indices);
+
+        unsafe {
+            *out_tensors = AbiMaxPool1dWithIndices { output, indices };
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_module_max_pool1d_with_indices_backward<P: Backend>(
+    x: TensorHandle,
+    kernel_size: usize,
+    stride: usize,
+    padding: usize,
+    dilation: usize,
+    ceil_mode: u8,
+    output_grad: TensorHandle,
+    indices: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let x_state = match adapter_state::<P>().lookup_float(x) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let output_grad_state = match adapter_state::<P>().lookup_float(output_grad) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let indices_state = match adapter_state::<P>().lookup_int(indices) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if x_state.device_handle != output_grad_state.device_handle
+            || x_state.device_handle != indices_state.device_handle
+        {
+            return invalid_argument();
+        }
+
+        let out = P::max_pool1d_with_indices_backward(
+            x_state.tensor,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            ceil_mode != 0,
+            output_grad_state.tensor,
+            indices_state.tensor,
+        );
+        let handle =
+            adapter_state::<P>().insert_float(DeviceHandle(x_state.device_handle), out.x_grad);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
 unsafe extern "C" fn abi_module_conv2d<P: Backend>(
     x: TensorHandle,
     weight: TensorHandle,
@@ -4939,6 +7349,9 @@ pub const fn backend_tensor_ops_v1<P: Backend>() -> BackendTensorOpsV1 {
         tensor_random: abi_float_tensor_random::<P>,
         tensor_to_device: abi_float_tensor_to_device::<P>,
         tensor_empty: abi_float_tensor_empty::<P>,
+        tensor_zeros: abi_float_tensor_zeros::<P>,
+        tensor_ones: abi_float_tensor_ones::<P>,
+        tensor_full: abi_float_tensor_full::<P>,
         tensor_into_int: abi_float_tensor_into_int::<P>,
         tensor_add: abi_float_tensor_add::<P>,
         tensor_add_scalar: abi_float_tensor_add_scalar::<P>,
@@ -5014,10 +7427,43 @@ pub const fn backend_tensor_ops_v1<P: Backend>() -> BackendTensorOpsV1 {
         tensor_argmin: abi_float_tensor_argmin::<P>,
         tensor_expand: abi_float_tensor_expand::<P>,
         tensor_unfold: abi_float_tensor_unfold::<P>,
+        tensor_repeat_dim: abi_float_tensor_repeat_dim::<P>,
+        tensor_clamp_min: abi_float_tensor_clamp_min::<P>,
+        tensor_clamp_max: abi_float_tensor_clamp_max::<P>,
+        tensor_clamp: abi_float_tensor_clamp::<P>,
+        tensor_neg: abi_float_tensor_neg::<P>,
+        tensor_transpose: abi_float_tensor_transpose::<P>,
+        tensor_not_equal: abi_float_tensor_not_equal::<P>,
+        tensor_not_equal_elem: abi_float_tensor_not_equal_elem::<P>,
+        tensor_mean: abi_float_tensor_mean::<P>,
+        tensor_powi: abi_float_tensor_powi::<P>,
+        tensor_powi_scalar: abi_float_tensor_powi_scalar::<P>,
+        tensor_cat: abi_float_tensor_cat::<P>,
+        tensor_max: abi_float_tensor_max::<P>,
+        tensor_max_dim: abi_float_tensor_max_dim::<P>,
+        tensor_max_dim_with_indices: abi_float_tensor_max_dim_with_indices::<P>,
+        tensor_min: abi_float_tensor_min::<P>,
+        tensor_min_dim: abi_float_tensor_min_dim::<P>,
+        tensor_min_dim_with_indices: abi_float_tensor_min_dim_with_indices::<P>,
+        tensor_max_abs: abi_float_tensor_max_abs::<P>,
+        tensor_max_abs_dim: abi_float_tensor_max_abs_dim::<P>,
+        tensor_any: abi_float_tensor_any::<P>,
+        tensor_any_dim: abi_float_tensor_any_dim::<P>,
+        tensor_all: abi_float_tensor_all::<P>,
+        tensor_all_dim: abi_float_tensor_all_dim::<P>,
+        tensor_sign: abi_float_tensor_sign::<P>,
+        tensor_sort: abi_float_tensor_sort::<P>,
+        tensor_sort_with_indices: abi_float_tensor_sort_with_indices::<P>,
+        tensor_argsort: abi_float_tensor_argsort::<P>,
+        tensor_is_nan: abi_float_tensor_is_nan::<P>,
+        tensor_is_inf: abi_float_tensor_is_inf::<P>,
         int_tensor_from_u64_data: abi_int_tensor_from_u64_data::<P>,
         int_tensor_into_u64_data: abi_int_tensor_into_u64_data::<P>,
         int_tensor_to_device: abi_int_tensor_to_device::<P>,
         int_tensor_empty: abi_int_tensor_empty::<P>,
+        int_tensor_zeros: abi_int_tensor_zeros::<P>,
+        int_tensor_ones: abi_int_tensor_ones::<P>,
+        int_tensor_full: abi_int_tensor_full::<P>,
         int_tensor_random: abi_int_tensor_random::<P>,
         int_tensor_into_float: abi_int_tensor_into_float::<P>,
         int_tensor_cast: abi_int_tensor_cast::<P>,
@@ -5079,6 +7525,36 @@ pub const fn backend_tensor_ops_v1<P: Backend>() -> BackendTensorOpsV1 {
         int_tensor_bitwise_right_shift_scalar: abi_int_tensor_bitwise_right_shift_scalar::<P>,
         int_tensor_expand: abi_int_tensor_expand::<P>,
         int_tensor_unfold: abi_int_tensor_unfold::<P>,
+        int_tensor_repeat_dim: abi_int_tensor_repeat_dim::<P>,
+        int_tensor_cat: abi_int_tensor_cat::<P>,
+        int_tensor_not_equal: abi_int_tensor_not_equal::<P>,
+        int_tensor_not_equal_elem: abi_int_tensor_not_equal_elem::<P>,
+        int_tensor_powi: abi_int_tensor_powi::<P>,
+        int_tensor_powi_scalar: abi_int_tensor_powi_scalar::<P>,
+        int_tensor_clamp_min: abi_int_tensor_clamp_min::<P>,
+        int_tensor_clamp_max: abi_int_tensor_clamp_max::<P>,
+        int_tensor_clamp: abi_int_tensor_clamp::<P>,
+        int_tensor_neg: abi_int_tensor_neg::<P>,
+        int_tensor_mean: abi_int_tensor_mean::<P>,
+        int_tensor_max: abi_int_tensor_max::<P>,
+        int_tensor_max_dim: abi_int_tensor_max_dim::<P>,
+        int_tensor_max_dim_with_indices: abi_int_tensor_max_dim_with_indices::<P>,
+        int_tensor_max_abs: abi_int_tensor_max_abs::<P>,
+        int_tensor_max_abs_dim: abi_int_tensor_max_abs_dim::<P>,
+        int_tensor_min: abi_int_tensor_min::<P>,
+        int_tensor_min_dim: abi_int_tensor_min_dim::<P>,
+        int_tensor_min_dim_with_indices: abi_int_tensor_min_dim_with_indices::<P>,
+        int_tensor_transpose: abi_int_tensor_transpose::<P>,
+        int_tensor_arange_step: abi_int_tensor_arange_step::<P>,
+        int_tensor_arange: abi_int_tensor_arange::<P>,
+        int_tensor_any: abi_int_tensor_any::<P>,
+        int_tensor_any_dim: abi_int_tensor_any_dim::<P>,
+        int_tensor_all: abi_int_tensor_all::<P>,
+        int_tensor_all_dim: abi_int_tensor_all_dim::<P>,
+        int_tensor_sign: abi_int_tensor_sign::<P>,
+        int_tensor_sort: abi_int_tensor_sort::<P>,
+        int_tensor_sort_with_indices: abi_int_tensor_sort_with_indices::<P>,
+        int_tensor_argsort: abi_int_tensor_argsort::<P>,
         bool_tensor_from_u8_data: abi_bool_tensor_from_u8_data::<P>,
         bool_tensor_into_u8_data: abi_bool_tensor_into_u8_data::<P>,
         bool_tensor_into_int: abi_bool_tensor_into_int::<P>,
@@ -5106,6 +7582,16 @@ pub const fn backend_tensor_ops_v1<P: Backend>() -> BackendTensorOpsV1 {
         bool_tensor_flip: abi_bool_tensor_flip::<P>,
         bool_tensor_expand: abi_bool_tensor_expand::<P>,
         bool_tensor_unfold: abi_bool_tensor_unfold::<P>,
+        bool_tensor_repeat_dim: abi_bool_tensor_repeat_dim::<P>,
+        bool_tensor_cat: abi_bool_tensor_cat::<P>,
+        bool_tensor_not_equal: abi_bool_tensor_not_equal::<P>,
+        bool_tensor_not_equal_elem: abi_bool_tensor_not_equal_elem::<P>,
+        bool_tensor_xor: abi_bool_tensor_xor::<P>,
+        bool_tensor_transpose: abi_bool_tensor_transpose::<P>,
+        bool_tensor_any: abi_bool_tensor_any::<P>,
+        bool_tensor_any_dim: abi_bool_tensor_any_dim::<P>,
+        bool_tensor_all: abi_bool_tensor_all::<P>,
+        bool_tensor_all_dim: abi_bool_tensor_all_dim::<P>,
         q_tensor_from_u8_data: abi_q_tensor_from_u8_data::<P>,
         q_tensor_into_u8_data: abi_q_tensor_into_u8_data::<P>,
         q_tensor_quantize: abi_q_tensor_quantize::<P>,
@@ -5118,6 +7604,36 @@ pub const fn backend_tensor_ops_v1<P: Backend>() -> BackendTensorOpsV1 {
         q_tensor_flip: abi_q_tensor_flip::<P>,
         q_tensor_select: abi_q_tensor_select::<P>,
         q_tensor_slice: abi_q_tensor_slice::<P>,
+        module_embedding: abi_module_embedding::<P>,
+        module_embedding_backward: abi_module_embedding_backward::<P>,
+        module_conv1d: abi_module_conv1d::<P>,
+        module_conv1d_x_backward: abi_module_conv1d_x_backward::<P>,
+        module_conv1d_weight_backward: abi_module_conv1d_weight_backward::<P>,
+        module_conv1d_bias_backward: abi_module_conv1d_bias_backward::<P>,
+        module_conv2d_x_backward: abi_module_conv2d_x_backward::<P>,
+        module_conv2d_weight_backward: abi_module_conv2d_weight_backward::<P>,
+        module_conv2d_bias_backward: abi_module_conv2d_bias_backward::<P>,
+        module_conv3d_x_backward: abi_module_conv3d_x_backward::<P>,
+        module_conv3d_weight_backward: abi_module_conv3d_weight_backward::<P>,
+        module_conv3d_bias_backward: abi_module_conv3d_bias_backward::<P>,
+        module_conv_transpose1d: abi_module_conv_transpose1d::<P>,
+        module_conv_transpose1d_x_backward: abi_module_conv_transpose1d_x_backward::<P>,
+        module_conv_transpose1d_weight_backward: abi_module_conv_transpose1d_weight_backward::<P>,
+        module_conv_transpose1d_bias_backward: abi_module_conv_transpose1d_bias_backward::<P>,
+        module_conv_transpose2d_x_backward: abi_module_conv_transpose2d_x_backward::<P>,
+        module_conv_transpose2d_weight_backward: abi_module_conv_transpose2d_weight_backward::<P>,
+        module_conv_transpose2d_bias_backward: abi_module_conv_transpose2d_bias_backward::<P>,
+        module_conv_transpose3d_x_backward: abi_module_conv_transpose3d_x_backward::<P>,
+        module_conv_transpose3d_weight_backward: abi_module_conv_transpose3d_weight_backward::<P>,
+        module_conv_transpose3d_bias_backward: abi_module_conv_transpose3d_bias_backward::<P>,
+        module_unfold4d: abi_module_unfold4d::<P>,
+        module_avg_pool1d: abi_module_avg_pool1d::<P>,
+        module_avg_pool1d_backward: abi_module_avg_pool1d_backward::<P>,
+        module_adaptive_avg_pool1d: abi_module_adaptive_avg_pool1d::<P>,
+        module_adaptive_avg_pool1d_backward: abi_module_adaptive_avg_pool1d_backward::<P>,
+        module_max_pool1d: abi_module_max_pool1d::<P>,
+        module_max_pool1d_with_indices: abi_module_max_pool1d_with_indices::<P>,
+        module_max_pool1d_with_indices_backward: abi_module_max_pool1d_with_indices_backward::<P>,
         module_conv2d: abi_module_conv2d::<P>,
         module_deform_conv2d: abi_module_deform_conv2d::<P>,
         module_deform_conv2d_backward: abi_module_deform_conv2d_backward::<P>,
@@ -5135,6 +7651,17 @@ pub const fn backend_tensor_ops_v1<P: Backend>() -> BackendTensorOpsV1 {
         module_interpolate_backward: abi_module_interpolate_backward::<P>,
         module_attention: abi_module_attention::<P>,
         module_rfft: abi_module_rfft::<P>,
+        activation_leaky_relu: abi_activation_leaky_relu::<P>,
+        activation_relu: abi_activation_relu::<P>,
+        activation_relu_backward: abi_activation_relu_backward::<P>,
+        activation_gelu: abi_activation_gelu::<P>,
+        activation_prelu: abi_activation_prelu::<P>,
+        activation_gelu_backward: abi_activation_gelu_backward::<P>,
+        activation_sigmoid: abi_activation_sigmoid::<P>,
+        activation_sigmoid_backward: abi_activation_sigmoid_backward::<P>,
+        activation_hard_sigmoid: abi_activation_hard_sigmoid::<P>,
+        activation_log_sigmoid: abi_activation_log_sigmoid::<P>,
+        activation_log_sigmoid_backward: abi_activation_log_sigmoid_backward::<P>,
         release_tensor: abi_release_tensor::<P>,
         release_f32_buffer: abi_release_f32_buffer,
         release_u64_buffer: abi_release_u64_buffer,

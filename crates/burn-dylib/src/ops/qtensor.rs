@@ -1,8 +1,4 @@
-#![allow(unused_variables)]
-
-use core::future::Future;
-
-use burn_backend::ops::{ActivationOps, QTensorOps, TransactionOps};
+use burn_backend::ops::QTensorOps;
 use burn_backend::quantization::{QuantScheme, QuantizationParametersPrimitive};
 use burn_backend::tensor::{Device, FloatTensor, IntTensor, QuantizedTensor};
 use burn_backend::{ExecutionError, FloatDType, Shape, Slice, TensorData};
@@ -80,7 +76,3 @@ impl<E: Send + Sync + 'static> QTensorOps<Dylib<E>> for Dylib<E> {
         runtime::q_tensor_slice(tensor, slices).unwrap_or_else(|err| panic!("{err}"))
     }
 }
-
-impl<E: Send + Sync + 'static> ActivationOps<Dylib<E>> for Dylib<E> {}
-
-impl<E: Send + Sync + 'static> TransactionOps<Dylib<E>> for Dylib<E> {}

@@ -1,5 +1,3 @@
-#![allow(unused_variables)]
-
 use core::future::Future;
 
 use burn_backend::ops::BoolTensorOps;
@@ -164,5 +162,45 @@ impl<E: Send + Sync + 'static> BoolTensorOps<Dylib<E>> for Dylib<E> {
         step: usize,
     ) -> BoolTensor<Self> {
         runtime::bool_tensor_unfold(tensor, dim, size, step).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn bool_repeat_dim(tensor: BoolTensor<Self>, dim: usize, times: usize) -> BoolTensor<Self> {
+        runtime::bool_tensor_repeat_dim(tensor, dim, times).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn bool_cat(tensors: Vec<BoolTensor<Self>>, dim: usize) -> BoolTensor<Self> {
+        runtime::bool_tensor_cat(tensors, dim).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn bool_not_equal(lhs: BoolTensor<Self>, rhs: BoolTensor<Self>) -> BoolTensor<Self> {
+        runtime::bool_tensor_not_equal(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn bool_not_equal_elem(lhs: BoolTensor<Self>, rhs: Scalar) -> BoolTensor<Self> {
+        runtime::bool_tensor_not_equal_elem(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn bool_xor(lhs: BoolTensor<Self>, rhs: BoolTensor<Self>) -> BoolTensor<Self> {
+        runtime::bool_tensor_xor(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn bool_transpose(tensor: BoolTensor<Self>) -> BoolTensor<Self> {
+        runtime::bool_tensor_transpose(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn bool_any(tensor: BoolTensor<Self>) -> BoolTensor<Self> {
+        runtime::bool_tensor_any(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn bool_any_dim(tensor: BoolTensor<Self>, dim: usize) -> BoolTensor<Self> {
+        runtime::bool_tensor_any_dim(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn bool_all(tensor: BoolTensor<Self>) -> BoolTensor<Self> {
+        runtime::bool_tensor_all(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn bool_all_dim(tensor: BoolTensor<Self>, dim: usize) -> BoolTensor<Self> {
+        runtime::bool_tensor_all_dim(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
     }
 }

@@ -1,5 +1,3 @@
-#![allow(unused_variables)]
-
 use core::future::Future;
 
 use burn_backend::ops::IntTensorOps;
@@ -358,5 +356,173 @@ impl<E: Send + Sync + 'static> IntTensorOps<Dylib<E>> for Dylib<E> {
         step: usize,
     ) -> IntTensor<Self> {
         runtime::int_tensor_unfold(tensor, dim, size, step).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_repeat_dim(tensor: IntTensor<Self>, dim: usize, times: usize) -> IntTensor<Self> {
+        runtime::int_tensor_repeat_dim(tensor, dim, times).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_cat(tensors: Vec<IntTensor<Self>>, dim: usize) -> IntTensor<Self> {
+        runtime::int_tensor_cat(tensors, dim).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_not_equal(
+        lhs: IntTensor<Self>,
+        rhs: IntTensor<Self>,
+        out_dtype: BoolDType,
+    ) -> BoolTensor<Self> {
+        runtime::int_tensor_not_equal(lhs, rhs, out_dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_not_equal_elem(
+        lhs: IntTensor<Self>,
+        rhs: Scalar,
+        out_dtype: BoolDType,
+    ) -> BoolTensor<Self> {
+        runtime::int_tensor_not_equal_elem(lhs, rhs, out_dtype)
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_powi(lhs: IntTensor<Self>, rhs: IntTensor<Self>) -> IntTensor<Self> {
+        runtime::int_tensor_powi(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_powi_scalar_impl(lhs: IntTensor<Self>, rhs: Scalar) -> IntTensor<Self> {
+        runtime::int_tensor_powi_scalar(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_clamp_min(tensor: IntTensor<Self>, min: Scalar) -> IntTensor<Self> {
+        runtime::int_tensor_clamp_min(tensor, min).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_clamp_max(tensor: IntTensor<Self>, max: Scalar) -> IntTensor<Self> {
+        runtime::int_tensor_clamp_max(tensor, max).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_clamp(tensor: IntTensor<Self>, min: Scalar, max: Scalar) -> IntTensor<Self> {
+        runtime::int_tensor_clamp(tensor, min, max).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_neg(tensor: IntTensor<Self>) -> IntTensor<Self> {
+        runtime::int_tensor_neg(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_zeros(shape: Shape, device: &Device<Self>, dtype: IntDType) -> IntTensor<Self> {
+        runtime::int_tensor_zeros(shape, device, dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_ones(shape: Shape, device: &Device<Self>, dtype: IntDType) -> IntTensor<Self> {
+        runtime::int_tensor_ones(shape, device, dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_full(
+        shape: Shape,
+        fill_value: Scalar,
+        device: &Device<Self>,
+        dtype: IntDType,
+    ) -> IntTensor<Self> {
+        runtime::int_tensor_full(shape, fill_value, device, dtype)
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_mean(tensor: IntTensor<Self>) -> IntTensor<Self> {
+        runtime::int_tensor_mean(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_max(tensor: IntTensor<Self>) -> IntTensor<Self> {
+        runtime::int_tensor_max(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_max_dim(tensor: IntTensor<Self>, dim: usize) -> IntTensor<Self> {
+        runtime::int_tensor_max_dim(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_max_dim_with_indices(
+        tensor: IntTensor<Self>,
+        dim: usize,
+    ) -> (IntTensor<Self>, IntTensor<Self>) {
+        runtime::int_tensor_max_dim_with_indices(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_max_abs(tensor: IntTensor<Self>) -> IntTensor<Self> {
+        runtime::int_tensor_max_abs(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_max_abs_dim(tensor: IntTensor<Self>, dim: usize) -> IntTensor<Self> {
+        runtime::int_tensor_max_abs_dim(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_min(tensor: IntTensor<Self>) -> IntTensor<Self> {
+        runtime::int_tensor_min(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_min_dim(tensor: IntTensor<Self>, dim: usize) -> IntTensor<Self> {
+        runtime::int_tensor_min_dim(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_min_dim_with_indices(
+        tensor: IntTensor<Self>,
+        dim: usize,
+    ) -> (IntTensor<Self>, IntTensor<Self>) {
+        runtime::int_tensor_min_dim_with_indices(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_transpose(tensor: IntTensor<Self>) -> IntTensor<Self> {
+        runtime::int_tensor_transpose(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_arange_step(
+        range: core::ops::Range<i64>,
+        step: usize,
+        device: &Device<Self>,
+        dtype: IntDType,
+    ) -> IntTensor<Self> {
+        runtime::int_tensor_arange_step(range, step, device, dtype)
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_arange(
+        range: core::ops::Range<i64>,
+        device: &Device<Self>,
+        dtype: IntDType,
+    ) -> IntTensor<Self> {
+        runtime::int_tensor_arange(range, device, dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_any(tensor: IntTensor<Self>, out_dtype: BoolDType) -> BoolTensor<Self> {
+        runtime::int_tensor_any(tensor, out_dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_any_dim(tensor: IntTensor<Self>, dim: usize, out_dtype: BoolDType) -> BoolTensor<Self> {
+        runtime::int_tensor_any_dim(tensor, dim, out_dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_all(tensor: IntTensor<Self>, out_dtype: BoolDType) -> BoolTensor<Self> {
+        runtime::int_tensor_all(tensor, out_dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_all_dim(tensor: IntTensor<Self>, dim: usize, out_dtype: BoolDType) -> BoolTensor<Self> {
+        runtime::int_tensor_all_dim(tensor, dim, out_dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_sign(tensor: IntTensor<Self>) -> IntTensor<Self> {
+        runtime::int_tensor_sign(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_sort(tensor: IntTensor<Self>, dim: usize, descending: bool) -> IntTensor<Self> {
+        runtime::int_tensor_sort(tensor, dim, descending).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_sort_with_indices(
+        tensor: IntTensor<Self>,
+        dim: usize,
+        descending: bool,
+    ) -> (IntTensor<Self>, IntTensor<Self>) {
+        runtime::int_tensor_sort_with_indices(tensor, dim, descending)
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn int_argsort(tensor: IntTensor<Self>, dim: usize, descending: bool) -> IntTensor<Self> {
+        runtime::int_tensor_argsort(tensor, dim, descending).unwrap_or_else(|err| panic!("{err}"))
     }
 }

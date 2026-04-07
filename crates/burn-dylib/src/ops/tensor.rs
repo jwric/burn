@@ -1,5 +1,3 @@
-#![allow(unused_variables)]
-
 use core::future::Future;
 
 use burn_backend::ops::FloatTensorOps;
@@ -430,5 +428,182 @@ impl<E: Send + Sync + 'static> FloatTensorOps<Dylib<E>> for Dylib<E> {
         step: usize,
     ) -> FloatTensor<Self> {
         runtime::float_tensor_unfold(tensor, dim, size, step).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_zeros(shape: Shape, device: &Device<Self>, dtype: FloatDType) -> FloatTensor<Self> {
+        runtime::float_tensor_zeros(shape, device, dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_ones(shape: Shape, device: &Device<Self>, dtype: FloatDType) -> FloatTensor<Self> {
+        runtime::float_tensor_ones(shape, device, dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_full(
+        shape: Shape,
+        fill_value: Scalar,
+        device: &Device<Self>,
+        dtype: FloatDType,
+    ) -> FloatTensor<Self> {
+        runtime::float_tensor_full(shape, fill_value, device, dtype)
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_repeat_dim(tensor: FloatTensor<Self>, dim: usize, times: usize) -> FloatTensor<Self> {
+        runtime::float_tensor_repeat_dim(tensor, dim, times).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_clamp_min(tensor: FloatTensor<Self>, min: Scalar) -> FloatTensor<Self> {
+        runtime::float_tensor_clamp_min(tensor, min).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_clamp_max(tensor: FloatTensor<Self>, max: Scalar) -> FloatTensor<Self> {
+        runtime::float_tensor_clamp_max(tensor, max).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_clamp(tensor: FloatTensor<Self>, min: Scalar, max: Scalar) -> FloatTensor<Self> {
+        runtime::float_tensor_clamp(tensor, min, max).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_neg(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        runtime::float_tensor_neg(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_transpose(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        runtime::float_tensor_transpose(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_not_equal(
+        lhs: FloatTensor<Self>,
+        rhs: FloatTensor<Self>,
+        out_dtype: BoolDType,
+    ) -> BoolTensor<Self> {
+        runtime::float_tensor_not_equal(lhs, rhs, out_dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_not_equal_elem(
+        lhs: FloatTensor<Self>,
+        rhs: Scalar,
+        out_dtype: BoolDType,
+    ) -> BoolTensor<Self> {
+        runtime::float_tensor_not_equal_elem(lhs, rhs, out_dtype)
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_mean(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        runtime::float_tensor_mean(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_powi(lhs: FloatTensor<Self>, rhs: IntTensor<Self>) -> FloatTensor<Self> {
+        runtime::float_tensor_powi(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_powi_scalar_impl(lhs: FloatTensor<Self>, rhs: Scalar) -> FloatTensor<Self> {
+        runtime::float_tensor_powi_scalar(lhs, rhs).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_cat(tensors: Vec<FloatTensor<Self>>, dim: usize) -> FloatTensor<Self> {
+        runtime::float_tensor_cat(tensors, dim).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_max(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        runtime::float_tensor_max(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_max_dim(tensor: FloatTensor<Self>, dim: usize) -> FloatTensor<Self> {
+        runtime::float_tensor_max_dim(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_max_dim_with_indices(
+        tensor: FloatTensor<Self>,
+        dim: usize,
+        indices_dtype: IntDType,
+    ) -> (FloatTensor<Self>, IntTensor<Self>) {
+        runtime::float_tensor_max_dim_with_indices(tensor, dim, indices_dtype)
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_min(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        runtime::float_tensor_min(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_min_dim(tensor: FloatTensor<Self>, dim: usize) -> FloatTensor<Self> {
+        runtime::float_tensor_min_dim(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_min_dim_with_indices(
+        tensor: FloatTensor<Self>,
+        dim: usize,
+        indices_dtype: IntDType,
+    ) -> (FloatTensor<Self>, IntTensor<Self>) {
+        runtime::float_tensor_min_dim_with_indices(tensor, dim, indices_dtype)
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_max_abs(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        runtime::float_tensor_max_abs(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_max_abs_dim(tensor: FloatTensor<Self>, dim: usize) -> FloatTensor<Self> {
+        runtime::float_tensor_max_abs_dim(tensor, dim).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_any(tensor: FloatTensor<Self>, out_dtype: BoolDType) -> BoolTensor<Self> {
+        runtime::float_tensor_any(tensor, out_dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_any_dim(
+        tensor: FloatTensor<Self>,
+        dim: usize,
+        out_dtype: BoolDType,
+    ) -> BoolTensor<Self> {
+        runtime::float_tensor_any_dim(tensor, dim, out_dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_all(tensor: FloatTensor<Self>, out_dtype: BoolDType) -> BoolTensor<Self> {
+        runtime::float_tensor_all(tensor, out_dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_all_dim(
+        tensor: FloatTensor<Self>,
+        dim: usize,
+        out_dtype: BoolDType,
+    ) -> BoolTensor<Self> {
+        runtime::float_tensor_all_dim(tensor, dim, out_dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_sign(tensor: FloatTensor<Self>) -> FloatTensor<Self> {
+        runtime::float_tensor_sign(tensor).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_sort(tensor: FloatTensor<Self>, dim: usize, descending: bool) -> FloatTensor<Self> {
+        runtime::float_tensor_sort(tensor, dim, descending).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_sort_with_indices(
+        tensor: FloatTensor<Self>,
+        dim: usize,
+        descending: bool,
+        indices_dtype: IntDType,
+    ) -> (FloatTensor<Self>, IntTensor<Self>) {
+        runtime::float_tensor_sort_with_indices(tensor, dim, descending, indices_dtype)
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_argsort(
+        tensor: FloatTensor<Self>,
+        dim: usize,
+        descending: bool,
+        out_dtype: IntDType,
+    ) -> IntTensor<Self> {
+        runtime::float_tensor_argsort(tensor, dim, descending, out_dtype)
+            .unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_is_nan(tensor: FloatTensor<Self>, out_dtype: BoolDType) -> BoolTensor<Self> {
+        runtime::float_tensor_is_nan(tensor, out_dtype).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    fn float_is_inf(tensor: FloatTensor<Self>, out_dtype: BoolDType) -> BoolTensor<Self> {
+        runtime::float_tensor_is_inf(tensor, out_dtype).unwrap_or_else(|err| panic!("{err}"))
     }
 }
