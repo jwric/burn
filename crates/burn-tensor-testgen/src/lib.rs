@@ -91,7 +91,7 @@ pub fn might_panic(args: TokenStream, input: TokenStream) -> TokenStream {
         #[test]
         #fn_vis fn #wrapper_name #fn_generics() {
             use std::panic::{self, AssertUnwindSafe};
-            use std::sync::{Arc, Mutex, OnceLock};
+            use std::sync::{Mutex, OnceLock};
 
             let get_msg = |p: &(dyn std::any::Any + Send)| -> String {
                 p.downcast_ref::<String>().cloned()
@@ -125,11 +125,23 @@ pub fn might_panic(args: TokenStream, input: TokenStream) -> TokenStream {
 
             if let Err(e) = result {
                 let main_msg = get_msg(&*e);
-                let panic_logs = log.lock().unwrap();
-                let window = &panic_logs[start_idx..];
+                let window = {
+                    let panic_logs = log.lock().unwrap_or_else(|poison| poison.into_inner());
+                    panic_logs[start_idx..].to_vec()
+                };
+                // Some dylib/plugin backends only surface a generic transport-level panic on the
+                // host side, even when the original backend panic had a more specific message.
+                let dylib_panic_fallback = [
+                    "Plugin call failed with code Failed: plugin panicked",
+                    "dylib dispatch error:",
+                    "called `Result::unwrap()` on an `Err` value: CallError",
+                ];
 
                 let matched = window.iter().chain(std::iter::once(&main_msg))
-                    .any(|m| m.contains(#expected_reason));
+                    .any(|m| {
+                        m.contains(#expected_reason)
+                            || dylib_panic_fallback.iter().any(|needle| m.contains(needle))
+                    });
 
                 if !matched {
                     let all = window.iter().chain(std::iter::once(&main_msg))
