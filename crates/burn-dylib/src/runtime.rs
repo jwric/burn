@@ -7,6 +7,7 @@ use burn_backend::{
         AttentionModuleOptions, ConvOptions, ConvTransposeOptions, DeformConv2dBackward,
         DeformConvOptions, InterpolateOptions, MaxPool2dBackward, MaxPool2dWithIndices,
     },
+    quantization::QuantScheme,
 };
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
@@ -651,9 +652,192 @@ pub(crate) fn dtype_usage(dtype: DType) -> DTypeUsageSet {
         | DType::U32
         | DType::U16
         | DType::U8
-        | DType::Bool(_) => DTypeUsage::general(),
-        _ => DTypeUsageSet::default(),
+        | DType::Bool(_)
+        | DType::QFloat(_) => DTypeUsage::general(),
     }
+}
+
+pub(crate) fn q_tensor_from_data(
+    data: TensorData,
+    device: &DylibDevice,
+) -> Result<DylibTensor, DylibError> {
+    let scheme = match data.dtype {
+        DType::QFloat(scheme) => scheme,
+        dtype => {
+            return Err(DylibError::InvalidInput(format!(
+                "Expected quantized dtype for q_tensor_from_data, got {dtype:?}"
+            )));
+        }
+    };
+
+    let shape = data.shape.clone();
+    let bytes = data.into_bytes().to_vec();
+
+    let (runtime, snapshot) = resolve_device_context(device)?;
+    let handle = runtime
+        .q_tensor_from_u8_data(snapshot.handle, shape.as_slice(), &bytes, scheme)
+        .map_err(map_call_error)?;
+
+    Ok(tensor_from_output_with_fallback(
+        &runtime,
+        snapshot.runtime_id,
+        device,
+        &shape,
+        handle,
+        DType::QFloat(scheme),
+    ))
+}
+
+pub(crate) fn q_tensor_quantize(
+    tensor: DylibTensor,
+    scheme: QuantScheme,
+    scales: DylibTensor,
+) -> Result<DylibTensor, DylibError> {
+    ensure_same_runtime_and_device("q_tensor_quantize", &[&tensor, &scales])?;
+
+    let runtime = get_runtime(tensor.runtime_id)?;
+    let handle = runtime
+        .q_tensor_quantize(tensor.handle, scheme, scales.handle)
+        .map_err(map_call_error)?;
+
+    Ok(tensor_from_output(
+        &runtime,
+        &tensor,
+        handle,
+        DType::QFloat(scheme),
+    ))
+}
+
+pub(crate) fn q_tensor_dequantize(
+    tensor: DylibTensor,
+    dtype: FloatDType,
+) -> Result<DylibTensor, DylibError> {
+    let runtime = get_runtime(tensor.runtime_id)?;
+    let handle = runtime
+        .q_tensor_dequantize(tensor.handle, dtype)
+        .map_err(map_call_error)?;
+
+    Ok(tensor_from_output(&runtime, &tensor, handle, dtype.into()))
+}
+
+pub(crate) fn q_tensor_into_data(tensor: DylibTensor) -> Result<TensorData, DylibError> {
+    let runtime = get_runtime(tensor.runtime_id)?;
+    let (bytes, scheme) = runtime
+        .q_tensor_into_u8_data(tensor.handle)
+        .map_err(map_call_error)?;
+    let shape = shape_from_runtime(&runtime, tensor.handle, &tensor.shape);
+
+    Ok(TensorData::from_bytes_vec(
+        bytes,
+        shape,
+        DType::QFloat(scheme),
+    ))
+}
+
+pub(crate) fn q_tensor_to_device(
+    tensor: DylibTensor,
+    device: &DylibDevice,
+) -> Result<DylibTensor, DylibError> {
+    if tensor.device == *device {
+        return Ok(tensor);
+    }
+
+    let (target_runtime, target_snapshot) = resolve_device_context(device)?;
+
+    if tensor.runtime_id == target_snapshot.runtime_id {
+        let handle = target_runtime
+            .q_tensor_to_device(tensor.handle, target_snapshot.handle)
+            .map_err(map_call_error)?;
+        return Ok(tensor_from_output_with_fallback(
+            &target_runtime,
+            tensor.runtime_id,
+            device,
+            &tensor.shape,
+            handle,
+            tensor.dtype,
+        ));
+    }
+
+    let data = q_tensor_into_data(tensor)?;
+    q_tensor_from_data(data, device)
+}
+
+pub(crate) fn q_tensor_reshape(
+    tensor: DylibTensor,
+    shape: Shape,
+) -> Result<DylibTensor, DylibError> {
+    let output_dtype = tensor.dtype;
+    forward_unary_op(tensor, output_dtype, |runtime, handle| {
+        runtime.q_tensor_reshape(handle, shape.as_slice())
+    })
+}
+
+pub(crate) fn q_tensor_expand(
+    tensor: DylibTensor,
+    shape: Shape,
+) -> Result<DylibTensor, DylibError> {
+    let output_dtype = tensor.dtype;
+    forward_unary_op(tensor, output_dtype, |runtime, handle| {
+        runtime.q_tensor_expand(handle, shape.as_slice())
+    })
+}
+
+pub(crate) fn q_tensor_swap_dims(
+    tensor: DylibTensor,
+    dim1: usize,
+    dim2: usize,
+) -> Result<DylibTensor, DylibError> {
+    let output_dtype = tensor.dtype;
+    forward_unary_op(tensor, output_dtype, |runtime, handle| {
+        runtime.q_tensor_swap_dims(handle, dim1, dim2)
+    })
+}
+
+pub(crate) fn q_tensor_permute(
+    tensor: DylibTensor,
+    axes: &[usize],
+) -> Result<DylibTensor, DylibError> {
+    let output_dtype = tensor.dtype;
+    forward_unary_op(tensor, output_dtype, |runtime, handle| {
+        runtime.q_tensor_permute(handle, axes)
+    })
+}
+
+pub(crate) fn q_tensor_flip(
+    tensor: DylibTensor,
+    axes: &[usize],
+) -> Result<DylibTensor, DylibError> {
+    let output_dtype = tensor.dtype;
+    forward_unary_op(tensor, output_dtype, |runtime, handle| {
+        runtime.q_tensor_flip(handle, axes)
+    })
+}
+
+pub(crate) fn q_tensor_select(
+    tensor: DylibTensor,
+    dim: usize,
+    indices: DylibTensor,
+) -> Result<DylibTensor, DylibError> {
+    let output_dtype = tensor.dtype;
+    forward_binary_op(
+        tensor,
+        indices,
+        output_dtype,
+        "q_tensor_select",
+        |runtime, tensor_handle, indices_handle| {
+            runtime.q_tensor_select(tensor_handle, dim, indices_handle)
+        },
+    )
+}
+
+pub(crate) fn q_tensor_slice(
+    tensor: DylibTensor,
+    slices: &[Slice],
+) -> Result<DylibTensor, DylibError> {
+    let output_dtype = tensor.dtype;
+    forward_unary_op(tensor, output_dtype, |runtime, handle| {
+        runtime.q_tensor_slice(handle, slices)
+    })
 }
 
 pub(crate) fn float_tensor_from_data(

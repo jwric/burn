@@ -34,7 +34,7 @@ webgpu = ["wgpu", "burn-dispatch/webgpu"]
 metal = ["wgpu", "burn-dispatch/metal"]
 wgpu = ["burn-dispatch/wgpu", "quantization", "cube"]
 cpu = ["burn-dispatch/cpu", "cube"]
-dylib = ["burn-dispatch/dylib"]
+dylib = ["burn-dispatch/dylib", "quantization", "cube"]
 
 autotune = ["burn-dispatch/autotune"]
 autotune-checks = ["burn-dispatch/autotune-checks"]

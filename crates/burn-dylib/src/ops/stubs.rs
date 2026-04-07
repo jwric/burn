@@ -8,11 +8,11 @@ use burn_backend::tensor::{Device, FloatTensor, IntTensor, QuantizedTensor};
 use burn_backend::{ExecutionError, FloatDType, Shape, Slice, TensorData};
 
 use super::super::backend::Dylib;
-use super::unsupported_op;
+use super::super::runtime;
 
 impl<E: Send + Sync + 'static> QTensorOps<Dylib<E>> for Dylib<E> {
     fn q_from_data(data: TensorData, device: &Device<Self>) -> QuantizedTensor<Self> {
-        unsupported_op("q_from_data");
+        runtime::q_tensor_from_data(data, device).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn quantize(
@@ -20,33 +20,36 @@ impl<E: Send + Sync + 'static> QTensorOps<Dylib<E>> for Dylib<E> {
         scheme: &QuantScheme,
         qparams: QuantizationParametersPrimitive<Self>,
     ) -> QuantizedTensor<Self> {
-        unsupported_op("quantize");
+        runtime::q_tensor_quantize(tensor, *scheme, qparams.scales)
+            .unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn dequantize(tensor: QuantizedTensor<Self>, dtype: FloatDType) -> FloatTensor<Self> {
-        unsupported_op("dequantize");
+        runtime::q_tensor_dequantize(tensor, dtype).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn q_device(tensor: &QuantizedTensor<Self>) -> Device<Self> {
-        unsupported_op("q_device");
+        tensor.device.clone()
     }
 
     fn q_to_device(tensor: QuantizedTensor<Self>, device: &Device<Self>) -> QuantizedTensor<Self> {
-        unsupported_op("q_to_device");
+        runtime::q_tensor_to_device(tensor, device).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn q_reshape(tensor: QuantizedTensor<Self>, shape: Shape) -> QuantizedTensor<Self> {
-        unsupported_op("q_reshape");
+        runtime::q_tensor_reshape(tensor, shape).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn q_into_data(
         tensor: QuantizedTensor<Self>,
     ) -> impl Future<Output = Result<TensorData, ExecutionError>> + Send {
-        async move { unsupported_op("q_into_data") }
+        core::future::ready(
+            runtime::q_tensor_into_data(tensor).map_err(runtime::to_execution_error),
+        )
     }
 
     fn q_expand(tensor: QuantizedTensor<Self>, shape: Shape) -> QuantizedTensor<Self> {
-        unsupported_op("q_expand");
+        runtime::q_tensor_expand(tensor, shape).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn q_swap_dims(
@@ -54,15 +57,15 @@ impl<E: Send + Sync + 'static> QTensorOps<Dylib<E>> for Dylib<E> {
         dim1: usize,
         dim2: usize,
     ) -> QuantizedTensor<Self> {
-        unsupported_op("q_swap_dims");
+        runtime::q_tensor_swap_dims(tensor, dim1, dim2).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn q_permute(tensor: QuantizedTensor<Self>, axes: &[usize]) -> QuantizedTensor<Self> {
-        unsupported_op("q_permute");
+        runtime::q_tensor_permute(tensor, axes).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn q_flip(tensor: QuantizedTensor<Self>, axes: &[usize]) -> QuantizedTensor<Self> {
-        unsupported_op("q_flip");
+        runtime::q_tensor_flip(tensor, axes).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn q_select(
@@ -70,11 +73,11 @@ impl<E: Send + Sync + 'static> QTensorOps<Dylib<E>> for Dylib<E> {
         dim: usize,
         indices: IntTensor<Self>,
     ) -> QuantizedTensor<Self> {
-        unsupported_op("q_select");
+        runtime::q_tensor_select(tensor, dim, indices).unwrap_or_else(|err| panic!("{err}"))
     }
 
     fn q_slice(tensor: QuantizedTensor<Self>, slices: &[Slice]) -> QuantizedTensor<Self> {
-        unsupported_op("q_slice");
+        runtime::q_tensor_slice(tensor, slices).unwrap_or_else(|err| panic!("{err}"))
     }
 }
 

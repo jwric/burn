@@ -62,6 +62,9 @@ impl TensorMetadata for DylibTensor {
 
 impl QTensorPrimitive for DylibTensor {
     fn scheme(&self) -> &QuantScheme {
-        panic!("Quantized operations are not supported for dylib backend.")
+        match &self.dtype {
+            DType::QFloat(scheme) => scheme,
+            _ => panic!("Quantization scheme is not available for this tensor"),
+        }
     }
 }

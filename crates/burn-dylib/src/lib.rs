@@ -55,7 +55,7 @@ pub const BACKEND_TENSOR_OPS_SYMBOL: &[u8] = b"burn_backend_tensor_ops_v1\0";
 pub const BACKEND_PLUGIN_ABI_VERSION: u32 = 1;
 
 /// Current tensor operations ABI version.
-pub const BACKEND_TENSOR_OPS_ABI_VERSION: u32 = 4;
+pub const BACKEND_TENSOR_OPS_ABI_VERSION: u32 = 5;
 
 /// Status code returned by plugin callbacks.
 #[repr(u32)]
@@ -313,6 +313,101 @@ pub enum AbiBoolDType {
     U8 = 1,
     /// `u32` bool storage.
     U32 = 2,
+}
+
+/// Max number of dimensions encoded for quantized block-size descriptors.
+pub const ABI_QUANT_BLOCK_MAX_DIMS: usize = 5;
+
+/// ABI quantized value representation.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiQuantValue {
+    /// 8-bit quantization with full range.
+    Q8F = 0,
+    /// 8-bit floating-point format (e5m2).
+    E5M2 = 1,
+    /// 8-bit floating-point format (e4m3).
+    E4M3 = 2,
+    /// 4-bit quantization with full range.
+    Q4F = 3,
+    /// 4-bit floating-point format (e2m1).
+    E2M1 = 4,
+    /// 2-bit quantization with full range.
+    Q2F = 5,
+    /// 8-bit quantization with symmetric range.
+    Q8S = 6,
+    /// 4-bit quantization with symmetric range.
+    Q4S = 7,
+    /// 2-bit quantization with symmetric range.
+    Q2S = 8,
+}
+
+/// ABI quantization parameter precision.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiQuantParam {
+    /// Full precision.
+    F32 = 0,
+    /// Half precision.
+    F16 = 1,
+    /// bfloat16 precision.
+    BF16 = 2,
+    /// Unsigned floating-point format (e8m0).
+    UE8M0 = 3,
+    /// Unsigned floating-point format (e4m3).
+    UE4M3 = 4,
+}
+
+/// ABI quantization storage descriptor.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiQuantStore {
+    /// Native quantization storage.
+    Native = 0,
+    /// Native packed quantization storage.
+    PackedNative = 1,
+    /// 32-bit packed quantization storage.
+    PackedU32 = 2,
+}
+
+/// ABI quantization mode.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiQuantMode {
+    /// Symmetric quantization mode.
+    Symmetric = 0,
+}
+
+/// ABI quantization granularity level.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiQuantLevel {
+    /// Per-tensor quantization.
+    Tensor = 0,
+    /// Per-block quantization.
+    Block = 1,
+}
+
+/// ABI quantization scheme descriptor.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AbiQuantScheme {
+    /// Quantized value representation.
+    pub value: AbiQuantValue,
+    /// Quantization parameter precision.
+    pub param: AbiQuantParam,
+    /// Storage format for quantized values.
+    pub store: AbiQuantStore,
+    /// Packing dimension for packed stores.
+    pub store_packed_dim: usize,
+    /// Quantization granularity level.
+    pub level: AbiQuantLevel,
+    /// Block dimensions for block-level quantization.
+    pub block_dims: [u8; ABI_QUANT_BLOCK_MAX_DIMS],
+    /// Number of valid entries in `block_dims`.
+    pub block_rank: usize,
+    /// Quantization mode.
+    pub mode: AbiQuantMode,
 }
 
 /// ABI random distribution tag.
@@ -599,6 +694,37 @@ pub type TensorIntoU64DataFn =
 /// Materializes a bool tensor into host `u8` data.
 pub type TensorIntoU8DataFn =
     unsafe extern "C" fn(tensor: TensorHandle, out_data: *mut OwnedU8Buffer) -> PluginStatus;
+
+/// Creates a quantized tensor from host `u8` bytes and quantization scheme.
+pub type QTensorFromU8DataFn = unsafe extern "C" fn(
+    device: DeviceHandle,
+    shape: TensorShapeRef,
+    data: U8SliceRef,
+    scheme: AbiQuantScheme,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Materializes a quantized tensor into host `u8` bytes and quantization scheme.
+pub type QTensorIntoU8DataFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    out_scheme: *mut AbiQuantScheme,
+    out_data: *mut OwnedU8Buffer,
+) -> PluginStatus;
+
+/// Quantizes a float tensor using a quantization scheme and scales tensor.
+pub type QTensorQuantizeFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    scheme: AbiQuantScheme,
+    scales: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
+
+/// Dequantizes a quantized tensor into a float tensor.
+pub type QTensorDequantizeFn = unsafe extern "C" fn(
+    tensor: TensorHandle,
+    out_dtype: AbiFloatDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus;
 
 /// Fetches the tensor shape.
 pub type TensorShapeFn =
@@ -1402,6 +1528,30 @@ pub struct BackendTensorOpsV1 {
     pub bool_tensor_expand: TensorReshapeFn,
     /// Dispatches bool tensor unfold.
     pub bool_tensor_unfold: TensorUnfoldFn,
+    /// Creates a quantized tensor from host `u8` bytes.
+    pub q_tensor_from_u8_data: QTensorFromU8DataFn,
+    /// Materializes a quantized tensor into host `u8` bytes.
+    pub q_tensor_into_u8_data: QTensorIntoU8DataFn,
+    /// Quantizes a float tensor.
+    pub q_tensor_quantize: QTensorQuantizeFn,
+    /// Dequantizes a quantized tensor.
+    pub q_tensor_dequantize: QTensorDequantizeFn,
+    /// Moves a quantized tensor to a target device.
+    pub q_tensor_to_device: TensorToDeviceFn,
+    /// Dispatches quantized tensor reshape.
+    pub q_tensor_reshape: TensorReshapeFn,
+    /// Dispatches quantized tensor expand.
+    pub q_tensor_expand: TensorReshapeFn,
+    /// Dispatches quantized tensor swap dims.
+    pub q_tensor_swap_dims: TensorSwapDimsFn,
+    /// Dispatches quantized tensor permute.
+    pub q_tensor_permute: TensorAxesFn,
+    /// Dispatches quantized tensor flip.
+    pub q_tensor_flip: TensorAxesFn,
+    /// Dispatches quantized tensor select.
+    pub q_tensor_select: TensorSelectFn,
+    /// Dispatches quantized tensor slice.
+    pub q_tensor_slice: TensorSliceFn,
     /// Dispatches module conv2d.
     pub module_conv2d: ModuleConv2dFn,
     /// Dispatches module deformable conv2d.
@@ -1624,19 +1774,24 @@ macro_rules! export_plugin_api {
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod loader {
     use super::{
-        AbiAttentionModuleOptions, AbiBoolDType, AbiConvOptions2, AbiConvOptions3,
-        AbiConvTransposeOptions2, AbiConvTransposeOptions3, AbiDeformConv2dBackward,
-        AbiDeformConvOptions2, AbiDistribution, AbiDistributionKind, AbiFloatDType, AbiIntDType,
-        AbiInterpolateMode, AbiInterpolateOptions, AbiMaxPool2dWithIndices, AbiRfftOutput,
-        AbiScalar, AbiScalarKind, AbiSlice, AbiSliceRef, BACKEND_PLUGIN_ABI_VERSION,
-        BACKEND_PLUGIN_SYMBOL, BACKEND_TENSOR_OPS_ABI_VERSION, BACKEND_TENSOR_OPS_SYMBOL,
-        BackendPluginEntrypoint, BackendPluginV1, BackendTensorOpsEntrypoint, BackendTensorOpsV1,
-        DeviceHandle, F32SliceRef, OwnedF32Buffer, OwnedU8Buffer, OwnedU64Buffer, OwnedUsizeBuffer,
-        PluginStatus, PluginStatusCode, TensorHandle, TensorShapeRef, U8SliceRef, U64SliceRef,
+        ABI_QUANT_BLOCK_MAX_DIMS, AbiAttentionModuleOptions, AbiBoolDType, AbiConvOptions2,
+        AbiConvOptions3, AbiConvTransposeOptions2, AbiConvTransposeOptions3,
+        AbiDeformConv2dBackward, AbiDeformConvOptions2, AbiDistribution, AbiDistributionKind,
+        AbiFloatDType, AbiIntDType, AbiInterpolateMode, AbiInterpolateOptions,
+        AbiMaxPool2dWithIndices, AbiQuantLevel, AbiQuantMode, AbiQuantParam, AbiQuantScheme,
+        AbiQuantStore, AbiQuantValue, AbiRfftOutput, AbiScalar, AbiScalarKind, AbiSlice,
+        AbiSliceRef, BACKEND_PLUGIN_ABI_VERSION, BACKEND_PLUGIN_SYMBOL,
+        BACKEND_TENSOR_OPS_ABI_VERSION, BACKEND_TENSOR_OPS_SYMBOL, BackendPluginEntrypoint,
+        BackendPluginV1, BackendTensorOpsEntrypoint, BackendTensorOpsV1, DeviceHandle, F32SliceRef,
+        OwnedF32Buffer, OwnedU8Buffer, OwnedU64Buffer, OwnedUsizeBuffer, PluginStatus,
+        PluginStatusCode, TensorHandle, TensorShapeRef, U8SliceRef, U64SliceRef,
     };
     use burn_backend::ops::{
         AttentionModuleOptions, ConvOptions, ConvTransposeOptions, DeformConvOptions,
         InterpolateMode, InterpolateOptions,
+    };
+    use burn_backend::quantization::{
+        BlockSize, QuantLevel, QuantMode, QuantParam, QuantScheme, QuantStore, QuantValue,
     };
     use burn_backend::{BoolDType, Distribution, FloatDType, IntDType, Scalar, Slice};
     use core::ffi::c_char;
@@ -3087,6 +3242,196 @@ pub mod loader {
             })
         }
 
+        /// Creates a quantized tensor from host bytes, shape and quantization scheme.
+        pub fn q_tensor_from_u8_data(
+            &self,
+            device: DeviceHandle,
+            shape: &[usize],
+            data: &[u8],
+            scheme: QuantScheme,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let mut handle = TensorHandle::INVALID;
+            let shape_ref = shape_ref(shape);
+            let data_ref = U8SliceRef {
+                ptr: data.as_ptr(),
+                len: data.len(),
+            };
+            let scheme = quant_scheme_to_abi(scheme);
+            let status = unsafe {
+                (self.tensor_ops().q_tensor_from_u8_data)(
+                    device,
+                    shape_ref,
+                    data_ref,
+                    scheme,
+                    &mut handle,
+                )
+            };
+            check_status(status)?;
+            if !handle.is_valid() {
+                return Err(PluginCallError::InvalidHandle("tensor"));
+            }
+            Ok(handle)
+        }
+
+        /// Reads a quantized tensor as host bytes plus quantization scheme.
+        pub fn q_tensor_into_u8_data(
+            &self,
+            tensor: TensorHandle,
+        ) -> Result<(Vec<u8>, QuantScheme), PluginCallError> {
+            let mut scheme = AbiQuantScheme {
+                value: AbiQuantValue::Q8F,
+                param: AbiQuantParam::F32,
+                store: AbiQuantStore::PackedU32,
+                store_packed_dim: 0,
+                level: AbiQuantLevel::Tensor,
+                block_dims: [1; ABI_QUANT_BLOCK_MAX_DIMS],
+                block_rank: 0,
+                mode: AbiQuantMode::Symmetric,
+            };
+            let mut buffer = OwnedU8Buffer::empty();
+            let status = unsafe {
+                (self.tensor_ops().q_tensor_into_u8_data)(tensor, &mut scheme, &mut buffer)
+            };
+            check_status(status)?;
+
+            let quant_scheme = quant_scheme_from_abi(scheme)?;
+
+            if buffer.len == 0 {
+                return Ok((Vec::new(), quant_scheme));
+            }
+            if buffer.ptr.is_null() {
+                return Err(PluginCallError::NullPointer("q_tensor_into_u8_data"));
+            }
+
+            let values = unsafe { std::slice::from_raw_parts(buffer.ptr, buffer.len) }.to_vec();
+            self.release_u8_buffer(buffer)?;
+            Ok((values, quant_scheme))
+        }
+
+        /// Quantizes a float tensor using the given quantization scheme and scales tensor.
+        pub fn q_tensor_quantize(
+            &self,
+            tensor: TensorHandle,
+            scheme: QuantScheme,
+            scales: TensorHandle,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let scheme = quant_scheme_to_abi(scheme);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().q_tensor_quantize)(tensor, scheme, scales, out)
+            })
+        }
+
+        /// Dequantizes a quantized tensor into a float tensor.
+        pub fn q_tensor_dequantize(
+            &self,
+            tensor: TensorHandle,
+            out_dtype: FloatDType,
+        ) -> Result<TensorHandle, PluginCallError> {
+            let out_dtype = float_dtype_to_abi(out_dtype);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().q_tensor_dequantize)(tensor, out_dtype, out)
+            })
+        }
+
+        /// Moves a quantized tensor to a different backend device.
+        pub fn q_tensor_to_device(
+            &self,
+            tensor: TensorHandle,
+            device: DeviceHandle,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().q_tensor_to_device)(tensor, device, out)
+            })
+        }
+
+        /// Reshapes a quantized tensor.
+        pub fn q_tensor_reshape(
+            &self,
+            tensor: TensorHandle,
+            shape: &[usize],
+        ) -> Result<TensorHandle, PluginCallError> {
+            let shape_ref = shape_ref(shape);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().q_tensor_reshape)(tensor, shape_ref, out)
+            })
+        }
+
+        /// Expands a quantized tensor to a broadcast-compatible shape.
+        pub fn q_tensor_expand(
+            &self,
+            tensor: TensorHandle,
+            shape: &[usize],
+        ) -> Result<TensorHandle, PluginCallError> {
+            let shape_ref = shape_ref(shape);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().q_tensor_expand)(tensor, shape_ref, out)
+            })
+        }
+
+        /// Swaps two dimensions on a quantized tensor.
+        pub fn q_tensor_swap_dims(
+            &self,
+            tensor: TensorHandle,
+            dim1: usize,
+            dim2: usize,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().q_tensor_swap_dims)(tensor, dim1, dim2, out)
+            })
+        }
+
+        /// Permutes quantized tensor dimensions using `axes`.
+        pub fn q_tensor_permute(
+            &self,
+            tensor: TensorHandle,
+            axes: &[usize],
+        ) -> Result<TensorHandle, PluginCallError> {
+            let axes_ref = shape_ref(axes);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().q_tensor_permute)(tensor, axes_ref, out)
+            })
+        }
+
+        /// Flips quantized tensor dimensions listed in `axes`.
+        pub fn q_tensor_flip(
+            &self,
+            tensor: TensorHandle,
+            axes: &[usize],
+        ) -> Result<TensorHandle, PluginCallError> {
+            let axes_ref = shape_ref(axes);
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().q_tensor_flip)(tensor, axes_ref, out)
+            })
+        }
+
+        /// Selects values from a quantized tensor using rank-1 indices.
+        pub fn q_tensor_select(
+            &self,
+            tensor: TensorHandle,
+            dim: usize,
+            indices: TensorHandle,
+        ) -> Result<TensorHandle, PluginCallError> {
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().q_tensor_select)(tensor, dim, indices, out)
+            })
+        }
+
+        /// Slices a quantized tensor.
+        pub fn q_tensor_slice(
+            &self,
+            tensor: TensorHandle,
+            slices: &[Slice],
+        ) -> Result<TensorHandle, PluginCallError> {
+            let slice_items = encode_slices(slices);
+            let slices_ref = AbiSliceRef {
+                ptr: slice_items.as_ptr(),
+                len: slice_items.len(),
+            };
+            self.call_with_out_handle("tensor", |out| unsafe {
+                (self.tensor_ops().q_tensor_slice)(tensor, slices_ref, out)
+            })
+        }
+
         /// Dispatches `conv2d` module operation.
         pub fn module_conv2d(
             &self,
@@ -3561,6 +3906,133 @@ pub mod loader {
             BoolDType::U8 => AbiBoolDType::U8,
             BoolDType::U32 => AbiBoolDType::U32,
         }
+    }
+
+    fn quant_value_to_abi(value: QuantValue) -> AbiQuantValue {
+        match value {
+            QuantValue::Q8F => AbiQuantValue::Q8F,
+            QuantValue::E5M2 => AbiQuantValue::E5M2,
+            QuantValue::E4M3 => AbiQuantValue::E4M3,
+            QuantValue::Q4F => AbiQuantValue::Q4F,
+            QuantValue::E2M1 => AbiQuantValue::E2M1,
+            QuantValue::Q2F => AbiQuantValue::Q2F,
+            QuantValue::Q8S => AbiQuantValue::Q8S,
+            QuantValue::Q4S => AbiQuantValue::Q4S,
+            QuantValue::Q2S => AbiQuantValue::Q2S,
+        }
+    }
+
+    fn quant_param_to_abi(param: QuantParam) -> AbiQuantParam {
+        match param {
+            QuantParam::F32 => AbiQuantParam::F32,
+            QuantParam::F16 => AbiQuantParam::F16,
+            QuantParam::BF16 => AbiQuantParam::BF16,
+            QuantParam::UE8M0 => AbiQuantParam::UE8M0,
+            QuantParam::UE4M3 => AbiQuantParam::UE4M3,
+        }
+    }
+
+    fn quant_store_to_abi(store: QuantStore) -> (AbiQuantStore, usize) {
+        match store {
+            QuantStore::Native => (AbiQuantStore::Native, 0),
+            QuantStore::PackedNative(dim) => (AbiQuantStore::PackedNative, dim),
+            QuantStore::PackedU32(dim) => (AbiQuantStore::PackedU32, dim),
+        }
+    }
+
+    fn quant_mode_to_abi(mode: QuantMode) -> AbiQuantMode {
+        match mode {
+            QuantMode::Symmetric => AbiQuantMode::Symmetric,
+        }
+    }
+
+    fn quant_scheme_to_abi(scheme: QuantScheme) -> AbiQuantScheme {
+        let (store, store_packed_dim) = quant_store_to_abi(scheme.store);
+        let (level, block_dims, block_rank) = match scheme.level {
+            QuantLevel::Tensor => (AbiQuantLevel::Tensor, [1; ABI_QUANT_BLOCK_MAX_DIMS], 0),
+            QuantLevel::Block(block_size) => {
+                let mut block_dims = [1; ABI_QUANT_BLOCK_MAX_DIMS];
+                let block_slice = block_size.as_slice();
+                let block_rank = block_slice.len().min(ABI_QUANT_BLOCK_MAX_DIMS);
+                block_dims[..block_rank].copy_from_slice(&block_slice[..block_rank]);
+                (AbiQuantLevel::Block, block_dims, block_rank)
+            }
+        };
+
+        AbiQuantScheme {
+            value: quant_value_to_abi(scheme.value),
+            param: quant_param_to_abi(scheme.param),
+            store,
+            store_packed_dim,
+            level,
+            block_dims,
+            block_rank,
+            mode: quant_mode_to_abi(scheme.mode),
+        }
+    }
+
+    fn quant_value_from_abi(value: AbiQuantValue) -> QuantValue {
+        match value {
+            AbiQuantValue::Q8F => QuantValue::Q8F,
+            AbiQuantValue::E5M2 => QuantValue::E5M2,
+            AbiQuantValue::E4M3 => QuantValue::E4M3,
+            AbiQuantValue::Q4F => QuantValue::Q4F,
+            AbiQuantValue::E2M1 => QuantValue::E2M1,
+            AbiQuantValue::Q2F => QuantValue::Q2F,
+            AbiQuantValue::Q8S => QuantValue::Q8S,
+            AbiQuantValue::Q4S => QuantValue::Q4S,
+            AbiQuantValue::Q2S => QuantValue::Q2S,
+        }
+    }
+
+    fn quant_param_from_abi(param: AbiQuantParam) -> QuantParam {
+        match param {
+            AbiQuantParam::F32 => QuantParam::F32,
+            AbiQuantParam::F16 => QuantParam::F16,
+            AbiQuantParam::BF16 => QuantParam::BF16,
+            AbiQuantParam::UE8M0 => QuantParam::UE8M0,
+            AbiQuantParam::UE4M3 => QuantParam::UE4M3,
+        }
+    }
+
+    fn quant_store_from_abi(store: AbiQuantStore, packed_dim: usize) -> QuantStore {
+        match store {
+            AbiQuantStore::Native => QuantStore::Native,
+            AbiQuantStore::PackedNative => QuantStore::PackedNative(packed_dim),
+            AbiQuantStore::PackedU32 => QuantStore::PackedU32(packed_dim),
+        }
+    }
+
+    fn quant_mode_from_abi(mode: AbiQuantMode) -> QuantMode {
+        match mode {
+            AbiQuantMode::Symmetric => QuantMode::Symmetric,
+        }
+    }
+
+    fn quant_scheme_from_abi(scheme: AbiQuantScheme) -> Result<QuantScheme, PluginCallError> {
+        let level = match scheme.level {
+            AbiQuantLevel::Tensor => QuantLevel::Tensor,
+            AbiQuantLevel::Block => {
+                if scheme.block_rank == 0 || scheme.block_rank > ABI_QUANT_BLOCK_MAX_DIMS {
+                    return Err(PluginCallError::Failure {
+                        code: PluginStatusCode::Failed,
+                        message: format!(
+                            "invalid quantized block rank '{}' in plugin response",
+                            scheme.block_rank
+                        ),
+                    });
+                }
+                QuantLevel::Block(BlockSize::new(&scheme.block_dims[..scheme.block_rank]))
+            }
+        };
+
+        Ok(QuantScheme {
+            value: quant_value_from_abi(scheme.value),
+            param: quant_param_from_abi(scheme.param),
+            store: quant_store_from_abi(scheme.store, scheme.store_packed_dim),
+            level,
+            mode: quant_mode_from_abi(scheme.mode),
+        })
     }
 
     fn scalar_to_abi(scalar: Scalar) -> AbiScalar {

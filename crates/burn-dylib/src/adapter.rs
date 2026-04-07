@@ -1,21 +1,26 @@
 use burn_backend::{
-    Backend, BoolDType, Device as BurnDevice, DeviceId, Distribution, FloatDType, IntDType, Scalar,
-    Shape, Slice, TensorData, TensorMetadata,
+    Backend, BoolDType, DType, Device as BurnDevice, DeviceId, Distribution, FloatDType, IntDType,
+    Scalar, Shape, Slice, TensorData, TensorMetadata,
     ops::{
         AttentionModuleOptions, ConvOptions, ConvTransposeOptions, DeformConvOptions,
         InterpolateMode, InterpolateOptions,
     },
+    quantization::{
+        BlockSize, QuantLevel, QuantMode, QuantParam, QuantScheme, QuantStore, QuantValue,
+        QuantizationParametersPrimitive,
+    },
 };
 
 use crate::{
-    AbiAttentionModuleOptions, AbiBoolDType, AbiConvOptions2, AbiConvOptions3,
-    AbiConvTransposeOptions2, AbiConvTransposeOptions3, AbiDeformConv2dBackward,
+    ABI_QUANT_BLOCK_MAX_DIMS, AbiAttentionModuleOptions, AbiBoolDType, AbiConvOptions2,
+    AbiConvOptions3, AbiConvTransposeOptions2, AbiConvTransposeOptions3, AbiDeformConv2dBackward,
     AbiDeformConvOptions2, AbiDistribution, AbiDistributionKind, AbiFloatDType, AbiIntDType,
-    AbiInterpolateMode, AbiInterpolateOptions, AbiMaxPool2dWithIndices, AbiRfftOutput, AbiScalar,
-    AbiScalarKind, AbiSliceRef, BACKEND_PLUGIN_ABI_VERSION, BACKEND_TENSOR_OPS_ABI_VERSION,
-    BackendNameFn, BackendPluginV1, BackendTensorOpsV1, DeviceHandle, F32SliceRef, OwnedF32Buffer,
-    OwnedU8Buffer, OwnedU64Buffer, OwnedUsizeBuffer, PluginStatus, PluginStatusCode, TensorHandle,
-    TensorShapeRef, U8SliceRef, U64SliceRef,
+    AbiInterpolateMode, AbiInterpolateOptions, AbiMaxPool2dWithIndices, AbiQuantLevel,
+    AbiQuantMode, AbiQuantParam, AbiQuantScheme, AbiQuantStore, AbiQuantValue, AbiRfftOutput,
+    AbiScalar, AbiScalarKind, AbiSliceRef, BACKEND_PLUGIN_ABI_VERSION,
+    BACKEND_TENSOR_OPS_ABI_VERSION, BackendNameFn, BackendPluginV1, BackendTensorOpsV1,
+    DeviceHandle, F32SliceRef, OwnedF32Buffer, OwnedU8Buffer, OwnedU64Buffer, OwnedUsizeBuffer,
+    PluginStatus, PluginStatusCode, TensorHandle, TensorShapeRef, U8SliceRef, U64SliceRef,
 };
 use core::any::TypeId;
 use std::collections::HashMap;
@@ -71,6 +76,7 @@ struct AdapterState<P: Backend> {
     float_tensors: Mutex<HashMap<u64, TensorState<P::FloatTensorPrimitive>>>,
     int_tensors: Mutex<HashMap<u64, TensorState<P::IntTensorPrimitive>>>,
     bool_tensors: Mutex<HashMap<u64, TensorState<P::BoolTensorPrimitive>>>,
+    quantized_tensors: Mutex<HashMap<u64, TensorState<P::QuantizedTensorPrimitive>>>,
 }
 
 impl<P: Backend> AdapterState<P> {
@@ -82,6 +88,7 @@ impl<P: Backend> AdapterState<P> {
             float_tensors: Mutex::new(HashMap::new()),
             int_tensors: Mutex::new(HashMap::new()),
             bool_tensors: Mutex::new(HashMap::new()),
+            quantized_tensors: Mutex::new(HashMap::new()),
         }
     }
 
@@ -95,6 +102,10 @@ impl<P: Backend> AdapterState<P> {
             .clear();
         self.int_tensors.lock().expect("int tensor lock").clear();
         self.bool_tensors.lock().expect("bool tensor lock").clear();
+        self.quantized_tensors
+            .lock()
+            .expect("quantized tensor lock")
+            .clear();
     }
 
     fn devices_snapshot(&self) -> Vec<P::Device> {
@@ -151,6 +162,18 @@ impl<P: Backend> AdapterState<P> {
             .ok_or_else(invalid_argument)
     }
 
+    fn lookup_quantized(
+        &self,
+        handle: TensorHandle,
+    ) -> Result<TensorState<P::QuantizedTensorPrimitive>, PluginStatus> {
+        self.quantized_tensors
+            .lock()
+            .expect("quantized tensor lock")
+            .get(&handle.0)
+            .cloned()
+            .ok_or_else(invalid_argument)
+    }
+
     fn lookup_tensor_shape(&self, handle: TensorHandle) -> Result<Shape, PluginStatus> {
         if let Some(state) = self
             .float_tensors
@@ -176,6 +199,16 @@ impl<P: Backend> AdapterState<P> {
             .bool_tensors
             .lock()
             .expect("bool tensor lock")
+            .get(&handle.0)
+            .cloned()
+        {
+            return Ok(state.tensor.shape());
+        }
+
+        if let Some(state) = self
+            .quantized_tensors
+            .lock()
+            .expect("quantized tensor lock")
             .get(&handle.0)
             .cloned()
         {
@@ -242,6 +275,25 @@ impl<P: Backend> AdapterState<P> {
         TensorHandle(id)
     }
 
+    fn insert_quantized(
+        &self,
+        device_handle: DeviceHandle,
+        tensor: P::QuantizedTensorPrimitive,
+    ) -> TensorHandle {
+        let id = self.next_tensor_id.fetch_add(1, Ordering::Relaxed);
+        self.quantized_tensors
+            .lock()
+            .expect("quantized tensor lock")
+            .insert(
+                id,
+                TensorState {
+                    device_handle: device_handle.0,
+                    tensor,
+                },
+            );
+        TensorHandle(id)
+    }
+
     fn release_device(&self, device: DeviceHandle) {
         self.devices.lock().expect("device lock").remove(&device.0);
         self.float_tensors
@@ -255,6 +307,10 @@ impl<P: Backend> AdapterState<P> {
         self.bool_tensors
             .lock()
             .expect("bool tensor lock")
+            .retain(|_, tensor| tensor.device_handle != device.0);
+        self.quantized_tensors
+            .lock()
+            .expect("quantized tensor lock")
             .retain(|_, tensor| tensor.device_handle != device.0);
     }
 
@@ -270,6 +326,10 @@ impl<P: Backend> AdapterState<P> {
         self.bool_tensors
             .lock()
             .expect("bool tensor lock")
+            .remove(&tensor.0);
+        self.quantized_tensors
+            .lock()
+            .expect("quantized tensor lock")
             .remove(&tensor.0);
     }
 }
@@ -442,6 +502,127 @@ fn bool_dtype_from_abi(value: AbiBoolDType) -> BoolDType {
         AbiBoolDType::Native => BoolDType::Native,
         AbiBoolDType::U8 => BoolDType::U8,
         AbiBoolDType::U32 => BoolDType::U32,
+    }
+}
+
+fn quant_value_from_abi(value: AbiQuantValue) -> QuantValue {
+    match value {
+        AbiQuantValue::Q8F => QuantValue::Q8F,
+        AbiQuantValue::E5M2 => QuantValue::E5M2,
+        AbiQuantValue::E4M3 => QuantValue::E4M3,
+        AbiQuantValue::Q4F => QuantValue::Q4F,
+        AbiQuantValue::E2M1 => QuantValue::E2M1,
+        AbiQuantValue::Q2F => QuantValue::Q2F,
+        AbiQuantValue::Q8S => QuantValue::Q8S,
+        AbiQuantValue::Q4S => QuantValue::Q4S,
+        AbiQuantValue::Q2S => QuantValue::Q2S,
+    }
+}
+
+fn quant_param_from_abi(value: AbiQuantParam) -> QuantParam {
+    match value {
+        AbiQuantParam::F32 => QuantParam::F32,
+        AbiQuantParam::F16 => QuantParam::F16,
+        AbiQuantParam::BF16 => QuantParam::BF16,
+        AbiQuantParam::UE8M0 => QuantParam::UE8M0,
+        AbiQuantParam::UE4M3 => QuantParam::UE4M3,
+    }
+}
+
+fn quant_store_from_abi(store: AbiQuantStore, packed_dim: usize) -> QuantStore {
+    match store {
+        AbiQuantStore::Native => QuantStore::Native,
+        AbiQuantStore::PackedNative => QuantStore::PackedNative(packed_dim),
+        AbiQuantStore::PackedU32 => QuantStore::PackedU32(packed_dim),
+    }
+}
+
+fn quant_mode_from_abi(mode: AbiQuantMode) -> QuantMode {
+    match mode {
+        AbiQuantMode::Symmetric => QuantMode::Symmetric,
+    }
+}
+
+fn quant_scheme_from_abi(value: AbiQuantScheme) -> Result<QuantScheme, PluginStatus> {
+    let level = match value.level {
+        AbiQuantLevel::Tensor => QuantLevel::Tensor,
+        AbiQuantLevel::Block => {
+            if value.block_rank == 0 || value.block_rank > ABI_QUANT_BLOCK_MAX_DIMS {
+                return Err(invalid_argument());
+            }
+            QuantLevel::Block(BlockSize::new(&value.block_dims[..value.block_rank]))
+        }
+    };
+
+    Ok(QuantScheme {
+        value: quant_value_from_abi(value.value),
+        param: quant_param_from_abi(value.param),
+        store: quant_store_from_abi(value.store, value.store_packed_dim),
+        level,
+        mode: quant_mode_from_abi(value.mode),
+    })
+}
+
+fn quant_value_to_abi(value: QuantValue) -> AbiQuantValue {
+    match value {
+        QuantValue::Q8F => AbiQuantValue::Q8F,
+        QuantValue::E5M2 => AbiQuantValue::E5M2,
+        QuantValue::E4M3 => AbiQuantValue::E4M3,
+        QuantValue::Q4F => AbiQuantValue::Q4F,
+        QuantValue::E2M1 => AbiQuantValue::E2M1,
+        QuantValue::Q2F => AbiQuantValue::Q2F,
+        QuantValue::Q8S => AbiQuantValue::Q8S,
+        QuantValue::Q4S => AbiQuantValue::Q4S,
+        QuantValue::Q2S => AbiQuantValue::Q2S,
+    }
+}
+
+fn quant_param_to_abi(param: QuantParam) -> AbiQuantParam {
+    match param {
+        QuantParam::F32 => AbiQuantParam::F32,
+        QuantParam::F16 => AbiQuantParam::F16,
+        QuantParam::BF16 => AbiQuantParam::BF16,
+        QuantParam::UE8M0 => AbiQuantParam::UE8M0,
+        QuantParam::UE4M3 => AbiQuantParam::UE4M3,
+    }
+}
+
+fn quant_store_to_abi(store: QuantStore) -> (AbiQuantStore, usize) {
+    match store {
+        QuantStore::Native => (AbiQuantStore::Native, 0),
+        QuantStore::PackedNative(dim) => (AbiQuantStore::PackedNative, dim),
+        QuantStore::PackedU32(dim) => (AbiQuantStore::PackedU32, dim),
+    }
+}
+
+fn quant_mode_to_abi(mode: QuantMode) -> AbiQuantMode {
+    match mode {
+        QuantMode::Symmetric => AbiQuantMode::Symmetric,
+    }
+}
+
+fn quant_scheme_to_abi(scheme: QuantScheme) -> AbiQuantScheme {
+    let (store, store_packed_dim) = quant_store_to_abi(scheme.store);
+    let (level, block_dims, block_rank) = match scheme.level {
+        QuantLevel::Tensor => (AbiQuantLevel::Tensor, [1; ABI_QUANT_BLOCK_MAX_DIMS], 0),
+        QuantLevel::Block(block_size) => {
+            let mut block_dims = [1; ABI_QUANT_BLOCK_MAX_DIMS];
+            let block_slice = block_size.as_slice();
+            let block_rank = block_slice.len().min(ABI_QUANT_BLOCK_MAX_DIMS);
+            block_dims[..block_rank].copy_from_slice(&block_slice[..block_rank]);
+            (AbiQuantLevel::Block, block_dims, block_rank)
+        }
+    };
+
+    AbiQuantScheme {
+        value: quant_value_to_abi(scheme.value),
+        param: quant_param_to_abi(scheme.param),
+        store,
+        store_packed_dim,
+        level,
+        block_dims,
+        block_rank,
+        mode: quant_mode_to_abi(scheme.mode),
     }
 }
 
@@ -3522,6 +3703,393 @@ unsafe extern "C" fn abi_bool_tensor_unfold<P: Backend>(
     })
 }
 
+unsafe extern "C" fn abi_q_tensor_from_u8_data<P: Backend>(
+    device: DeviceHandle,
+    shape: TensorShapeRef,
+    data: U8SliceRef,
+    scheme: AbiQuantScheme,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let device_state = match adapter_state::<P>().lookup_device(device) {
+            Ok(device_state) => device_state,
+            Err(status) => return status,
+        };
+        let shape = match try_shape(shape) {
+            Ok(shape) => shape,
+            Err(status) => return status,
+        };
+        let values = match try_u8_data(data) {
+            Ok(values) => values,
+            Err(status) => return status,
+        };
+        let scheme = match quant_scheme_from_abi(scheme) {
+            Ok(scheme) => scheme,
+            Err(status) => return status,
+        };
+
+        let data = TensorData::from_bytes_vec(values, shape, DType::QFloat(scheme));
+        let tensor = P::q_from_data(data, &device_state);
+        let handle = adapter_state::<P>().insert_quantized(device, tensor);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_q_tensor_into_u8_data<P: Backend>(
+    tensor: TensorHandle,
+    out_scheme: *mut AbiQuantScheme,
+    out_data: *mut OwnedU8Buffer,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_scheme.is_null() || out_data.is_null() {
+            return invalid_argument();
+        }
+
+        let tensor_state = match adapter_state::<P>().lookup_quantized(tensor) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        let data = match burn_backend::read_sync(P::q_into_data(tensor_state.tensor)) {
+            Ok(data) => data,
+            Err(_) => return execution_error(),
+        };
+        let scheme = match data.dtype {
+            DType::QFloat(scheme) => scheme,
+            _ => return execution_error(),
+        };
+
+        let mut values = data.into_bytes().to_vec();
+        let buffer = OwnedU8Buffer {
+            ptr: values.as_mut_ptr(),
+            len: values.len(),
+        };
+        std::mem::forget(values);
+
+        unsafe {
+            *out_scheme = quant_scheme_to_abi(scheme);
+            *out_data = buffer;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_q_tensor_quantize<P: Backend>(
+    tensor: TensorHandle,
+    scheme: AbiQuantScheme,
+    scales: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let tensor_state = match adapter_state::<P>().lookup_float(tensor) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let scales_state = match adapter_state::<P>().lookup_float(scales) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        if tensor_state.device_handle != scales_state.device_handle {
+            return invalid_argument();
+        }
+
+        let scheme = match quant_scheme_from_abi(scheme) {
+            Ok(scheme) => scheme,
+            Err(status) => return status,
+        };
+        let qparams = QuantizationParametersPrimitive {
+            scales: scales_state.tensor,
+        };
+        let out = P::quantize(tensor_state.tensor, &scheme, qparams);
+        let handle =
+            adapter_state::<P>().insert_quantized(DeviceHandle(tensor_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_q_tensor_dequantize<P: Backend>(
+    tensor: TensorHandle,
+    out_dtype: AbiFloatDType,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let tensor_state = match adapter_state::<P>().lookup_quantized(tensor) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        let out = P::dequantize(tensor_state.tensor, float_dtype_from_abi(out_dtype));
+        let handle =
+            adapter_state::<P>().insert_float(DeviceHandle(tensor_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_q_tensor_to_device<P: Backend>(
+    tensor: TensorHandle,
+    device: DeviceHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let tensor_state = match adapter_state::<P>().lookup_quantized(tensor) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let device_state = match adapter_state::<P>().lookup_device(device) {
+            Ok(device_state) => device_state,
+            Err(status) => return status,
+        };
+
+        let out = P::q_to_device(tensor_state.tensor, &device_state);
+        let handle = adapter_state::<P>().insert_quantized(device, out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_q_tensor_reshape<P: Backend>(
+    tensor: TensorHandle,
+    shape: TensorShapeRef,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let tensor_state = match adapter_state::<P>().lookup_quantized(tensor) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let shape = match try_shape(shape) {
+            Ok(shape) => shape,
+            Err(status) => return status,
+        };
+
+        let out = P::q_reshape(tensor_state.tensor, shape);
+        let handle =
+            adapter_state::<P>().insert_quantized(DeviceHandle(tensor_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_q_tensor_expand<P: Backend>(
+    tensor: TensorHandle,
+    shape: TensorShapeRef,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let tensor_state = match adapter_state::<P>().lookup_quantized(tensor) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let shape = match try_shape(shape) {
+            Ok(shape) => shape,
+            Err(status) => return status,
+        };
+
+        let out = P::q_expand(tensor_state.tensor, shape);
+        let handle =
+            adapter_state::<P>().insert_quantized(DeviceHandle(tensor_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_q_tensor_swap_dims<P: Backend>(
+    tensor: TensorHandle,
+    dim1: usize,
+    dim2: usize,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let tensor_state = match adapter_state::<P>().lookup_quantized(tensor) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        let out = P::q_swap_dims(tensor_state.tensor, dim1, dim2);
+        let handle =
+            adapter_state::<P>().insert_quantized(DeviceHandle(tensor_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_q_tensor_permute<P: Backend>(
+    tensor: TensorHandle,
+    axes: TensorShapeRef,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let tensor_state = match adapter_state::<P>().lookup_quantized(tensor) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let axes = match try_shape(axes) {
+            Ok(shape) => shape,
+            Err(status) => return status,
+        };
+
+        let out = P::q_permute(tensor_state.tensor, axes.as_slice());
+        let handle =
+            adapter_state::<P>().insert_quantized(DeviceHandle(tensor_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_q_tensor_flip<P: Backend>(
+    tensor: TensorHandle,
+    axes: TensorShapeRef,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let tensor_state = match adapter_state::<P>().lookup_quantized(tensor) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let axes = match try_shape(axes) {
+            Ok(shape) => shape,
+            Err(status) => return status,
+        };
+
+        let out = P::q_flip(tensor_state.tensor, axes.as_slice());
+        let handle =
+            adapter_state::<P>().insert_quantized(DeviceHandle(tensor_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_q_tensor_select<P: Backend>(
+    tensor: TensorHandle,
+    dim: usize,
+    indices: TensorHandle,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let tensor_state = match adapter_state::<P>().lookup_quantized(tensor) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let indices_state = match adapter_state::<P>().lookup_int(indices) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+
+        if tensor_state.device_handle != indices_state.device_handle {
+            return invalid_argument();
+        }
+
+        let out = P::q_select(tensor_state.tensor, dim, indices_state.tensor);
+        let handle =
+            adapter_state::<P>().insert_quantized(DeviceHandle(tensor_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
+unsafe extern "C" fn abi_q_tensor_slice<P: Backend>(
+    tensor: TensorHandle,
+    slices: AbiSliceRef,
+    out_tensor: *mut TensorHandle,
+) -> PluginStatus {
+    with_boundary(|| {
+        if out_tensor.is_null() {
+            return invalid_argument();
+        }
+
+        let tensor_state = match adapter_state::<P>().lookup_quantized(tensor) {
+            Ok(state) => state,
+            Err(status) => return status,
+        };
+        let slices = match try_slices(slices) {
+            Ok(slices) => slices,
+            Err(status) => return status,
+        };
+
+        let out = P::q_slice(tensor_state.tensor, &slices);
+        let handle =
+            adapter_state::<P>().insert_quantized(DeviceHandle(tensor_state.device_handle), out);
+
+        unsafe {
+            *out_tensor = handle;
+        }
+        ok()
+    })
+}
+
 unsafe extern "C" fn abi_module_conv2d<P: Backend>(
     x: TensorHandle,
     weight: TensorHandle,
@@ -4538,6 +5106,18 @@ pub const fn backend_tensor_ops_v1<P: Backend>() -> BackendTensorOpsV1 {
         bool_tensor_flip: abi_bool_tensor_flip::<P>,
         bool_tensor_expand: abi_bool_tensor_expand::<P>,
         bool_tensor_unfold: abi_bool_tensor_unfold::<P>,
+        q_tensor_from_u8_data: abi_q_tensor_from_u8_data::<P>,
+        q_tensor_into_u8_data: abi_q_tensor_into_u8_data::<P>,
+        q_tensor_quantize: abi_q_tensor_quantize::<P>,
+        q_tensor_dequantize: abi_q_tensor_dequantize::<P>,
+        q_tensor_to_device: abi_q_tensor_to_device::<P>,
+        q_tensor_reshape: abi_q_tensor_reshape::<P>,
+        q_tensor_expand: abi_q_tensor_expand::<P>,
+        q_tensor_swap_dims: abi_q_tensor_swap_dims::<P>,
+        q_tensor_permute: abi_q_tensor_permute::<P>,
+        q_tensor_flip: abi_q_tensor_flip::<P>,
+        q_tensor_select: abi_q_tensor_select::<P>,
+        q_tensor_slice: abi_q_tensor_slice::<P>,
         module_conv2d: abi_module_conv2d::<P>,
         module_deform_conv2d: abi_module_deform_conv2d::<P>,
         module_deform_conv2d_backward: abi_module_deform_conv2d_backward::<P>,
