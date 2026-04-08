@@ -73,6 +73,7 @@ std = [
     "burn-nn/std",
     "burn-optim/std",
     "burn-dispatch?/std",
+    "burn-dylib?/std",
 ]
 tracing = [
     "cubecl?/tracing",

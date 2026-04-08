@@ -6,7 +6,7 @@ use burn_backend::{
     ops::{
         AttentionModuleOptions, ConvOptions, ConvTransposeOptions, DeformConv2dBackward,
         DeformConvOptions, InterpolateOptions, MaxPool1dBackward, MaxPool1dWithIndices,
-        MaxPool2dBackward, MaxPool2dWithIndices, UnfoldOptions,
+        MaxPool2dBackward, MaxPool2dWithIndices, TransactionPrimitiveData, UnfoldOptions,
     },
     quantization::QuantScheme,
 };
@@ -581,7 +581,12 @@ fn create_device_from_runtime(
 /// Creates a device using the plugin's default device.
 pub fn create_default_device() -> Result<DylibDevice, DylibError> {
     let path = default_plugin_path()?;
-    let runtime_id = register_runtime(&path)?;
+    create_default_device_from_path(path)
+}
+
+/// Creates a device using the plugin's default device from an explicit shared library path.
+pub fn create_default_device_from_path(path: impl AsRef<Path>) -> Result<DylibDevice, DylibError> {
+    let runtime_id = register_runtime(path)?;
     let runtime = get_runtime(runtime_id)?;
     let (type_id, ordinal, device) = runtime.create_default_device().map_err(map_call_error)?;
     let ordinal_u32 = u32::try_from(ordinal).map_err(|_| {
@@ -2258,6 +2263,63 @@ pub(crate) fn bool_tensor_into_data(tensor: DylibTensor) -> Result<TensorData, D
         .map_err(map_call_error)?;
     let shape = shape_from_runtime(&runtime, tensor.handle, &tensor.shape);
     Ok(TensorData::new(values, shape).convert_dtype(tensor.dtype))
+}
+
+pub(crate) fn transaction_execute(
+    read_floats: Vec<DylibTensor>,
+    read_qfloats: Vec<DylibTensor>,
+    read_ints: Vec<DylibTensor>,
+    read_bools: Vec<DylibTensor>,
+) -> Result<TransactionPrimitiveData, DylibError> {
+    let runtime_id = read_floats
+        .first()
+        .or(read_qfloats.first())
+        .or(read_ints.first())
+        .or(read_bools.first())
+        .map(|t| t.runtime_id);
+
+    let Some(runtime_id) = runtime_id else {
+        return Ok(TransactionPrimitiveData::default());
+    };
+
+    let runtime = get_runtime(runtime_id)?;
+
+    let float_handles: Vec<_> = read_floats.iter().map(|t| t.handle).collect();
+    let qfloat_handles: Vec<_> = read_qfloats.iter().map(|t| t.handle).collect();
+    let int_handles: Vec<_> = read_ints.iter().map(|t| t.handle).collect();
+    let bool_handles: Vec<_> = read_bools.iter().map(|t| t.handle).collect();
+
+    let (float_data, qfloat_data, int_data, bool_data) = runtime
+        .transaction_execute(&float_handles, &qfloat_handles, &int_handles, &bool_handles)
+        .map_err(map_call_error)?;
+
+    let mut floats = Vec::with_capacity(read_floats.len());
+    for (tensor, values) in read_floats.into_iter().zip(float_data) {
+        floats.push(TensorData::new(values, tensor.shape).convert_dtype(tensor.dtype));
+    }
+
+    let mut qfloats = Vec::with_capacity(read_qfloats.len());
+    for (tensor, (bytes, scheme)) in read_qfloats.into_iter().zip(qfloat_data) {
+        qfloats.push(TensorData::from_bytes_vec(bytes, tensor.shape, DType::QFloat(scheme)));
+    }
+
+    let mut ints = Vec::with_capacity(read_ints.len());
+    for (tensor, values) in read_ints.into_iter().zip(int_data) {
+        let dtype = dtype_to_int_dtype(tensor.dtype).unwrap_or(IntDType::I32);
+        ints.push(tensor_data_from_u64(values, tensor.shape, dtype).convert_dtype(tensor.dtype));
+    }
+
+    let mut bools = Vec::with_capacity(read_bools.len());
+    for (tensor, values) in read_bools.into_iter().zip(bool_data) {
+        bools.push(TensorData::new(values, tensor.shape).convert_dtype(tensor.dtype));
+    }
+
+    Ok(TransactionPrimitiveData {
+        read_floats: floats,
+        read_qfloats: qfloats,
+        read_ints: ints,
+        read_bools: bools,
+    })
 }
 
 pub(crate) fn bool_tensor_to_device(

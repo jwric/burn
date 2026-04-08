@@ -1,11 +1,11 @@
-use burn::backend::WebGpu;
-use guide::model::ModelConfig;
+use guide::{
+    backend::{create_device, GuideBackend},
+    model::ModelConfig,
+};
 
 fn main() {
-    type MyBackend = WebGpu<f32, i32>;
-
-    let device = Default::default();
-    let model = ModelConfig::new(10, 512).init::<MyBackend>(&device);
+    let device = create_device();
+    let model = ModelConfig::new(10, 512).init::<GuideBackend>(&device);
 
     println!("{model}");
 }

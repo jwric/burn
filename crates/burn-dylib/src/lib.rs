@@ -43,7 +43,10 @@ pub use backend::Dylib;
 pub use device::DylibDevice;
 pub use runtime::DylibError;
 
-pub use runtime::{create_default_device, create_device_from_path, device_from_registry};
+pub use runtime::{
+    create_default_device, create_default_device_from_path, create_device_from_path,
+    device_from_registry,
+};
 
 /// Symbol name that backend plugins must export.
 pub const BACKEND_PLUGIN_SYMBOL: &[u8] = b"burn_backend_plugin_v1\0";
@@ -55,7 +58,7 @@ pub const BACKEND_TENSOR_OPS_SYMBOL: &[u8] = b"burn_backend_tensor_ops_v1\0";
 pub const BACKEND_PLUGIN_ABI_VERSION: u32 = 1;
 
 /// Current tensor operations ABI version.
-pub const BACKEND_TENSOR_OPS_ABI_VERSION: u32 = 6;
+pub const BACKEND_TENSOR_OPS_ABI_VERSION: u32 = 7;
 
 /// Status code returned by plugin callbacks.
 #[repr(u32)]
@@ -710,6 +713,19 @@ pub struct AbiRfftOutput {
     pub real: TensorHandle,
     /// Imaginary output tensor.
     pub imag: TensorHandle,
+}
+
+/// Owned quantized tensor data result from a transaction call.
+///
+/// One item is written per quantized tensor read in a [`TransactionExecuteFn`] call.
+/// The `data` buffer is plugin-allocated and must be released via `release_u8_buffer`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OwnedQTransactionItem {
+    /// Quantization scheme for this result.
+    pub scheme: AbiQuantScheme,
+    /// Quantized data bytes (plugin-allocated).
+    pub data: OwnedU8Buffer,
 }
 
 /// Creates a default backend device and writes its type ID, ordinal, and handle into `out_type_id`, `out_ordinal`, and `out_device`.
@@ -1643,6 +1659,23 @@ pub type ReleaseU8BufferFn = unsafe extern "C" fn(buffer: OwnedU8Buffer) -> Plug
 /// Releases a plugin-allocated shape buffer.
 pub type ReleaseUsizeBufferFn = unsafe extern "C" fn(buffer: OwnedUsizeBuffer) -> PluginStatus;
 
+/// Reads multiple tensors in a single plugin call.
+///
+/// `out_floats`, `out_qfloats`, `out_ints`, and `out_bools` are caller-allocated arrays whose
+/// lengths match the corresponding `TensorHandleRef.len` fields. Pass a null pointer when the
+/// corresponding count is zero. The plugin fills each slot; data pointers within are
+/// plugin-allocated and must be released with the corresponding `release_*_buffer` functions.
+pub type TransactionExecuteFn = unsafe extern "C" fn(
+    floats: TensorHandleRef,
+    qfloats: TensorHandleRef,
+    ints: TensorHandleRef,
+    bools: TensorHandleRef,
+    out_floats: *mut OwnedF32Buffer,
+    out_qfloats: *mut OwnedQTransactionItem,
+    out_ints: *mut OwnedU64Buffer,
+    out_bools: *mut OwnedU8Buffer,
+) -> PluginStatus;
+
 /// C ABI table exported by backend plugins.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -2312,6 +2345,8 @@ pub struct BackendTensorOpsV1 {
     pub activation_log_sigmoid: TensorUnaryFn,
     /// Dispatches log-sigmoid backward activation.
     pub activation_log_sigmoid_backward: TensorBinaryFn,
+    /// Executes a read transaction for all tensor types in a single plugin call.
+    pub transaction_execute: TransactionExecuteFn,
     /// Releases a tensor handle.
     pub release_tensor: TensorReleaseFn,
     /// Releases a plugin-allocated f32 buffer.
@@ -2512,8 +2547,8 @@ pub mod loader {
         BACKEND_PLUGIN_ABI_VERSION, BACKEND_PLUGIN_SYMBOL, BACKEND_TENSOR_OPS_ABI_VERSION,
         BACKEND_TENSOR_OPS_SYMBOL, BackendPluginEntrypoint, BackendPluginV1,
         BackendTensorOpsEntrypoint, BackendTensorOpsV1, DeviceHandle, F32SliceRef, OwnedF32Buffer,
-        OwnedU8Buffer, OwnedU64Buffer, OwnedUsizeBuffer, PluginStatus, PluginStatusCode,
-        TensorHandle, TensorHandleRef, TensorShapeRef, U8SliceRef, U64SliceRef,
+        OwnedQTransactionItem, OwnedU8Buffer, OwnedU64Buffer, OwnedUsizeBuffer, PluginStatus,
+        PluginStatusCode, TensorHandle, TensorHandleRef, TensorShapeRef, U8SliceRef, U64SliceRef,
     };
     use burn_backend::ops::{
         AttentionModuleOptions, ConvOptions, ConvTransposeOptions, DeformConvOptions,
@@ -5594,6 +5629,166 @@ pub mod loader {
         pub fn release_tensor(&self, tensor: TensorHandle) -> Result<(), PluginCallError> {
             let status = unsafe { (self.tensor_ops().release_tensor)(tensor) };
             check_status(status)
+        }
+
+        /// Executes a read transaction, returning raw data vectors for each tensor type.
+        ///
+        /// Returns `(floats, qfloats, ints, bools)` where:
+        /// - `floats`: one `Vec<f32>` per float tensor
+        /// - `qfloats`: one `(Vec<u8>, QuantScheme)` per quantized tensor
+        /// - `ints`: one `Vec<u64>` per int tensor
+        /// - `bools`: one `Vec<u8>` per bool tensor
+        pub fn transaction_execute(
+            &self,
+            floats: &[TensorHandle],
+            qfloats: &[TensorHandle],
+            ints: &[TensorHandle],
+            bools: &[TensorHandle],
+        ) -> Result<
+            (
+                Vec<Vec<f32>>,
+                Vec<(Vec<u8>, QuantScheme)>,
+                Vec<Vec<u64>>,
+                Vec<Vec<u8>>,
+            ),
+            PluginCallError,
+        > {
+            let mut out_floats: Vec<OwnedF32Buffer> =
+                vec![OwnedF32Buffer::empty(); floats.len()];
+            let mut out_qfloats: Vec<OwnedQTransactionItem> = (0..qfloats.len())
+                .map(|_| OwnedQTransactionItem {
+                    scheme: AbiQuantScheme {
+                        value: AbiQuantValue::Q8F,
+                        param: AbiQuantParam::F32,
+                        store: AbiQuantStore::PackedU32,
+                        store_packed_dim: 0,
+                        level: AbiQuantLevel::Tensor,
+                        block_dims: [1; ABI_QUANT_BLOCK_MAX_DIMS],
+                        block_rank: 0,
+                        mode: AbiQuantMode::Symmetric,
+                    },
+                    data: OwnedU8Buffer::empty(),
+                })
+                .collect();
+            let mut out_ints: Vec<OwnedU64Buffer> =
+                vec![OwnedU64Buffer::empty(); ints.len()];
+            let mut out_bools: Vec<OwnedU8Buffer> =
+                vec![OwnedU8Buffer::empty(); bools.len()];
+
+            let floats_ref = TensorHandleRef {
+                ptr: floats.as_ptr(),
+                len: floats.len(),
+            };
+            let qfloats_ref = TensorHandleRef {
+                ptr: qfloats.as_ptr(),
+                len: qfloats.len(),
+            };
+            let ints_ref = TensorHandleRef {
+                ptr: ints.as_ptr(),
+                len: ints.len(),
+            };
+            let bools_ref = TensorHandleRef {
+                ptr: bools.as_ptr(),
+                len: bools.len(),
+            };
+
+            let status = unsafe {
+                (self.tensor_ops().transaction_execute)(
+                    floats_ref,
+                    qfloats_ref,
+                    ints_ref,
+                    bools_ref,
+                    if floats.is_empty() {
+                        std::ptr::null_mut()
+                    } else {
+                        out_floats.as_mut_ptr()
+                    },
+                    if qfloats.is_empty() {
+                        std::ptr::null_mut()
+                    } else {
+                        out_qfloats.as_mut_ptr()
+                    },
+                    if ints.is_empty() {
+                        std::ptr::null_mut()
+                    } else {
+                        out_ints.as_mut_ptr()
+                    },
+                    if bools.is_empty() {
+                        std::ptr::null_mut()
+                    } else {
+                        out_bools.as_mut_ptr()
+                    },
+                )
+            };
+            check_status(status)?;
+
+            let mut float_result = Vec::with_capacity(floats.len());
+            for buf in out_floats {
+                if buf.len == 0 {
+                    float_result.push(Vec::new());
+                    continue;
+                }
+                if buf.ptr.is_null() {
+                    return Err(PluginCallError::NullPointer("transaction_execute/float"));
+                }
+                let values =
+                    unsafe { std::slice::from_raw_parts(buf.ptr, buf.len) }.to_vec();
+                self.release_f32_buffer(buf)?;
+                float_result.push(values);
+            }
+
+            let mut qfloat_result = Vec::with_capacity(qfloats.len());
+            for item in out_qfloats {
+                let scheme = quant_scheme_from_abi(item.scheme)?;
+                let data = if item.data.len == 0 {
+                    Vec::new()
+                } else {
+                    if item.data.ptr.is_null() {
+                        return Err(PluginCallError::NullPointer(
+                            "transaction_execute/qfloat",
+                        ));
+                    }
+                    let values = unsafe {
+                        std::slice::from_raw_parts(item.data.ptr, item.data.len)
+                    }
+                    .to_vec();
+                    self.release_u8_buffer(item.data)?;
+                    values
+                };
+                qfloat_result.push((data, scheme));
+            }
+
+            let mut int_result = Vec::with_capacity(ints.len());
+            for buf in out_ints {
+                if buf.len == 0 {
+                    int_result.push(Vec::new());
+                    continue;
+                }
+                if buf.ptr.is_null() {
+                    return Err(PluginCallError::NullPointer("transaction_execute/int"));
+                }
+                let values =
+                    unsafe { std::slice::from_raw_parts(buf.ptr, buf.len) }.to_vec();
+                self.release_u64_buffer(buf)?;
+                int_result.push(values);
+            }
+
+            let mut bool_result = Vec::with_capacity(bools.len());
+            for buf in out_bools {
+                if buf.len == 0 {
+                    bool_result.push(Vec::new());
+                    continue;
+                }
+                if buf.ptr.is_null() {
+                    return Err(PluginCallError::NullPointer("transaction_execute/bool"));
+                }
+                let values =
+                    unsafe { std::slice::from_raw_parts(buf.ptr, buf.len) }.to_vec();
+                self.release_u8_buffer(buf)?;
+                bool_result.push(values);
+            }
+
+            Ok((float_result, qfloat_result, int_result, bool_result))
         }
 
         fn api(&self) -> &BackendPluginV1 {

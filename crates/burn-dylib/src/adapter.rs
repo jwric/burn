@@ -3,7 +3,7 @@ use burn_backend::{
     Scalar, Shape, Slice, TensorData, TensorMetadata,
     ops::{
         AttentionModuleOptions, ConvOptions, ConvTransposeOptions, DeformConvOptions,
-        InterpolateMode, InterpolateOptions, UnfoldOptions,
+        InterpolateMode, InterpolateOptions, TransactionPrimitive, UnfoldOptions,
     },
     quantization::{
         BlockSize, QuantLevel, QuantMode, QuantParam, QuantScheme, QuantStore, QuantValue,
@@ -21,9 +21,9 @@ use crate::{
     AbiScalarKind, AbiSliceRef, AbiTensorWithIndices, AbiUnfoldOptions,
     BACKEND_PLUGIN_ABI_VERSION,
     BACKEND_TENSOR_OPS_ABI_VERSION, BackendNameFn, BackendPluginV1, BackendTensorOpsV1,
-    DeviceHandle, F32SliceRef, OwnedF32Buffer, OwnedU8Buffer, OwnedU64Buffer, OwnedUsizeBuffer,
-    PluginStatus, PluginStatusCode, TensorHandle, TensorHandleRef, TensorShapeRef, U8SliceRef,
-    U64SliceRef,
+    DeviceHandle, F32SliceRef, OwnedF32Buffer, OwnedQTransactionItem, OwnedU8Buffer,
+    OwnedU64Buffer, OwnedUsizeBuffer, PluginStatus, PluginStatusCode, TensorHandle,
+    TensorHandleRef, TensorShapeRef, U8SliceRef, U64SliceRef,
 };
 use core::any::TypeId;
 use std::collections::HashMap;
@@ -7336,6 +7336,185 @@ pub const fn backend_plugin_v1<P: Backend>(backend_name: BackendNameFn) -> Backe
     }
 }
 
+unsafe extern "C" fn abi_transaction_execute<P: Backend>(
+    floats: TensorHandleRef,
+    qfloats: TensorHandleRef,
+    ints: TensorHandleRef,
+    bools: TensorHandleRef,
+    out_floats: *mut OwnedF32Buffer,
+    out_qfloats: *mut OwnedQTransactionItem,
+    out_ints: *mut OwnedU64Buffer,
+    out_bools: *mut OwnedU8Buffer,
+) -> PluginStatus {
+    with_boundary(|| {
+        if floats.len > 0 && out_floats.is_null() {
+            return invalid_argument();
+        }
+        if qfloats.len > 0 && out_qfloats.is_null() {
+            return invalid_argument();
+        }
+        if ints.len > 0 && out_ints.is_null() {
+            return invalid_argument();
+        }
+        if bools.len > 0 && out_bools.is_null() {
+            return invalid_argument();
+        }
+
+        let float_handles = match try_tensor_handles(floats) {
+            Ok(h) => h,
+            Err(s) => return s,
+        };
+        let qfloat_handles = match try_tensor_handles(qfloats) {
+            Ok(h) => h,
+            Err(s) => return s,
+        };
+        let int_handles = match try_tensor_handles(ints) {
+            Ok(h) => h,
+            Err(s) => return s,
+        };
+        let bool_handles = match try_tensor_handles(bools) {
+            Ok(h) => h,
+            Err(s) => return s,
+        };
+
+        let state = adapter_state::<P>();
+
+        let mut float_primitives = Vec::with_capacity(float_handles.len());
+        for &h in &float_handles {
+            match state.lookup_float(h) {
+                Ok(s) => float_primitives.push(s.tensor),
+                Err(st) => return st,
+            }
+        }
+
+        let mut qfloat_primitives = Vec::with_capacity(qfloat_handles.len());
+        for &h in &qfloat_handles {
+            match state.lookup_quantized(h) {
+                Ok(s) => qfloat_primitives.push(s.tensor),
+                Err(st) => return st,
+            }
+        }
+
+        let mut int_primitives = Vec::with_capacity(int_handles.len());
+        for &h in &int_handles {
+            match state.lookup_int(h) {
+                Ok(s) => int_primitives.push(s.tensor),
+                Err(st) => return st,
+            }
+        }
+
+        let mut bool_primitives = Vec::with_capacity(bool_handles.len());
+        for &h in &bool_handles {
+            match state.lookup_bool(h) {
+                Ok(s) => bool_primitives.push(s.tensor),
+                Err(st) => return st,
+            }
+        }
+
+        let transaction = TransactionPrimitive::new(
+            float_primitives,
+            qfloat_primitives,
+            int_primitives,
+            bool_primitives,
+        );
+        let result = match burn_backend::read_sync(P::tr_execute(transaction)) {
+            Ok(data) => data,
+            Err(_) => return execution_error(),
+        };
+
+        for (i, data) in result.read_floats.into_iter().enumerate() {
+            let mut values = match data.into_vec::<f32>() {
+                Ok(v) => v,
+                Err(_) => return execution_error(),
+            };
+            let buf = OwnedF32Buffer {
+                ptr: values.as_mut_ptr(),
+                len: values.len(),
+            };
+            std::mem::forget(values);
+            unsafe { *out_floats.add(i) = buf; }
+        }
+
+        for (i, data) in result.read_qfloats.into_iter().enumerate() {
+            let scheme = match data.dtype {
+                DType::QFloat(s) => s,
+                _ => return execution_error(),
+            };
+            let mut bytes = data.into_bytes().to_vec();
+            let buf = OwnedU8Buffer {
+                ptr: bytes.as_mut_ptr(),
+                len: bytes.len(),
+            };
+            std::mem::forget(bytes);
+            unsafe {
+                *out_qfloats.add(i) = OwnedQTransactionItem {
+                    scheme: quant_scheme_to_abi(scheme),
+                    data: buf,
+                };
+            }
+        }
+
+        for (i, data) in result.read_ints.into_iter().enumerate() {
+            let mut values: Vec<u64> = match data.dtype {
+                DType::I64 => match data.into_vec::<i64>() {
+                    Ok(v) => v.into_iter().map(|x| x as u64).collect(),
+                    Err(_) => return execution_error(),
+                },
+                DType::I32 => match data.into_vec::<i32>() {
+                    Ok(v) => v.into_iter().map(|x| x as u64).collect(),
+                    Err(_) => return execution_error(),
+                },
+                DType::I16 => match data.into_vec::<i16>() {
+                    Ok(v) => v.into_iter().map(|x| x as u64).collect(),
+                    Err(_) => return execution_error(),
+                },
+                DType::I8 => match data.into_vec::<i8>() {
+                    Ok(v) => v.into_iter().map(|x| x as u64).collect(),
+                    Err(_) => return execution_error(),
+                },
+                DType::U64 => match data.into_vec::<u64>() {
+                    Ok(v) => v,
+                    Err(_) => return execution_error(),
+                },
+                DType::U32 => match data.into_vec::<u32>() {
+                    Ok(v) => v.into_iter().map(u64::from).collect(),
+                    Err(_) => return execution_error(),
+                },
+                DType::U16 => match data.into_vec::<u16>() {
+                    Ok(v) => v.into_iter().map(u64::from).collect(),
+                    Err(_) => return execution_error(),
+                },
+                DType::U8 => match data.into_vec::<u8>() {
+                    Ok(v) => v.into_iter().map(u64::from).collect(),
+                    Err(_) => return execution_error(),
+                },
+                _ => return execution_error(),
+            };
+            let buf = OwnedU64Buffer {
+                ptr: values.as_mut_ptr(),
+                len: values.len(),
+            };
+            std::mem::forget(values);
+            unsafe { *out_ints.add(i) = buf; }
+        }
+
+        for (i, data) in result.read_bools.into_iter().enumerate() {
+            let mut values = match data.into_vec::<bool>() {
+                Ok(v) => v.into_iter().map(u8::from).collect::<Vec<u8>>(),
+                Err(_) => return execution_error(),
+            };
+            let buf = OwnedU8Buffer {
+                ptr: values.as_mut_ptr(),
+                len: values.len(),
+            };
+            std::mem::forget(values);
+            unsafe { *out_bools.add(i) = buf; }
+        }
+
+        ok()
+    })
+}
+
 /// Builds the tensor operation table for a backend-backed plugin implementation.
 pub const fn backend_tensor_ops_v1<P: Backend>() -> BackendTensorOpsV1 {
     BackendTensorOpsV1 {
@@ -7662,6 +7841,7 @@ pub const fn backend_tensor_ops_v1<P: Backend>() -> BackendTensorOpsV1 {
         activation_hard_sigmoid: abi_activation_hard_sigmoid::<P>,
         activation_log_sigmoid: abi_activation_log_sigmoid::<P>,
         activation_log_sigmoid_backward: abi_activation_log_sigmoid_backward::<P>,
+        transaction_execute: abi_transaction_execute::<P>,
         release_tensor: abi_release_tensor::<P>,
         release_f32_buffer: abi_release_f32_buffer,
         release_u64_buffer: abi_release_u64_buffer,
