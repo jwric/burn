@@ -18,6 +18,7 @@
 
 use crate::Device;
 pub use burn_dispatch::backends::remote::RemoteNode;
+pub use burn_dispatch::devices::BURN_REMOTE_ALPN;
 
 /// Transport used to serve remote clients.
 #[derive(Debug, Clone)]
