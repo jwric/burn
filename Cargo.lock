@@ -7064,6 +7064,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
+name = "p2p-remote-training"
+version = "0.22.0-pre.1"
+dependencies = [
+ "blake3",
+ "burn-flex",
+ "burn-remote",
+ "burn-tensor",
+ "iroh",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "palette"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
