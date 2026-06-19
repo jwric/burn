@@ -1,12 +1,11 @@
-use burn_remote::{BURN_REMOTE_ALPN, EndpointAddr, EndpointId, RemoteNode, SecretKey};
-use burn_tensor::{Device, Distribution, Tensor};
-use iroh::endpoint::presets;
+use burn::server::{Channel, RemoteNode, BURN_REMOTE_ALPN};
+use burn::tensor::{Device, Distribution, Tensor};
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey, endpoint::presets};
 use tracing_subscriber::{EnvFilter, fmt};
 
 fn init_logging() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,burn_remote=debug"));
-
     fmt().with_env_filter(filter).init();
 }
 
@@ -15,12 +14,7 @@ fn topic_key(topic: &str) -> SecretKey {
     SecretKey::from_bytes(hash.as_bytes())
 }
 
-// Bind a RemoteNode whose identity is fixed to the given topic string.
-// The N0 preset auto-publishes the relay address to pkarr DNS so the client
-// can discover it with only the NodeId.
 async fn bind_with_topic(topic: &str) -> RemoteNode {
-    use iroh::Endpoint;
-
     let secret = topic_key(topic);
     let endpoint = Endpoint::builder(presets::N0)
         .secret_key(secret)
@@ -31,49 +25,27 @@ async fn bind_with_topic(topic: &str) -> RemoteNode {
     RemoteNode::from_endpoint(endpoint)
 }
 
-pub fn run_server(topic: &str) {
-    use burn_flex::Flex;
-    use burn_remote::server::start_iroh_async;
-
+pub async fn run_server(topic: &str) {
     init_logging();
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    rt.block_on(async {
-        let node = bind_with_topic(topic).await;
-
-        tracing::info!(topic, node_id = %node.id(), "server ready");
-        tracing::info!("waiting for clients (press Ctrl-C to stop)");
-
-        start_iroh_async::<Flex>(node, vec![Default::default()]).await;
-
-        tracing::info!("server stopped");
-    });
+    let node = bind_with_topic(topic).await;
+    tracing::info!(topic, node_id = %node.id(), "server ready");
+    tracing::info!("waiting for clients (press Ctrl-C to stop)");
+    burn::server::start_async(Device::flex(), Channel::Iroh { node }).await;
+    tracing::info!("server stopped");
 }
 
-pub fn run_client(topic: &str) {
+pub async fn run_client(topic: &str) {
     let server_id: EndpointId = topic_key(topic).public();
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    println!("topic     : {topic}");
+    println!("server id : {server_id}");
+    println!("connecting...");
 
-    rt.block_on(async {
-        println!("topic     : {topic}");
-        println!("server id : {server_id}");
-        println!("connecting...");
+    let node = RemoteNode::bind().await.expect("bind failed");
+    let device = Device::remote_iroh(&node, EndpointAddr::from(server_id), 0);
 
-        let node = RemoteNode::bind().await.expect("bind failed");
-        let remote = node.device(EndpointAddr::from(server_id), 0);
-        remote.connect();
-
-        println!("connected\n");
-        train(&Device::new(remote));
-    });
+    println!("connected\n");
+    train(&device);
 }
 
 fn train(device: &Device) {
