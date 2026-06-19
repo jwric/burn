@@ -88,13 +88,13 @@ macro_rules! with_backend {
                 let $devices = host_devices!(DispatchDeviceId::WebGpu, WebGpu);
                 $body
             }
-            #[cfg(feature = "flex")]
+            #[cfg(any(feature = "flex", default_backend))]
             DispatchDevice::Flex(_) => {
                 type $b = Flex;
                 let $devices = host_devices!(DispatchDeviceId::Flex, Flex);
                 $body
             }
-            #[cfg(any(feature = "ndarray", default_backend))]
+            #[cfg(feature = "ndarray")]
             DispatchDevice::NdArray(_) => {
                 type $b = NdArray;
                 let $devices = host_devices!(DispatchDeviceId::NdArray, NdArray);
@@ -135,5 +135,19 @@ pub fn start_websocket(device: DispatchDevice, port: u16) {
 pub async fn start_websocket_async(device: DispatchDevice, port: u16) {
     with_backend!(device, |B, devices| {
         burn_remote::server::start_websocket_async::<B>(devices, port).await
+    })
+}
+
+/// Start an Iroh remote compute node, blocking the current thread.
+pub fn start_iroh(device: DispatchDevice, node: burn_remote::RemoteNode) {
+    with_backend!(device, |B, devices| {
+        burn_remote::server::start_iroh::<B>(node, devices)
+    })
+}
+
+/// Start an Iroh remote compute node on the caller's async runtime.
+pub async fn start_iroh_async(device: DispatchDevice, node: burn_remote::RemoteNode) {
+    with_backend!(device, |B, devices| {
+        burn_remote::server::start_iroh_async::<B>(node, devices).await
     })
 }

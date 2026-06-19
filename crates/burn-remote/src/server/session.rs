@@ -1,5 +1,4 @@
 use burn_backend::tensor::Device;
-use burn_communication::{Protocol, external_comm::ExternalCommService};
 use burn_ir::BackendIr;
 use burn_router::TensorInterpreter;
 use std::{collections::HashMap, sync::Arc};
@@ -7,6 +6,7 @@ use tokio::sync::{Mutex, mpsc};
 
 use crate::server::local_comm::LocalCommService;
 use crate::server::service::{FetchService, SubmitService};
+use crate::server::transfer::TensorTransfer;
 use crate::server::worker::SessionHandler;
 use crate::shared::{SessionId, Task, TaskResponse};
 
@@ -30,15 +30,15 @@ const RESPONSE_CHANNEL_CAPACITY: usize = 64;
 /// session a dispatcher routes each task to a per-stream worker thread, so per-stream ordering is
 /// preserved while independent streams — and other sessions — keep making progress even when one
 /// stream is parked on a blocking op (a same-host transfer rendezvous or an all-reduce barrier).
-pub struct SessionManager<B, P>
+pub struct SessionManager<B, T>
 where
     B: BackendIr,
-    P: Protocol,
+    T: TensorTransfer<B>,
 {
     /// All devices this server hosts, indexed by the device index the client selects at
     /// session init. `devices[0]` is the default device (`DeviceIndex::Default`).
     devices: Vec<Device<B>>,
-    pub(crate) external_comm: Arc<ExternalCommService<B, P>>,
+    pub(crate) transfer: Arc<T>,
     /// Rendezvous registry for same-host tensor transfers between this server's sessions.
     pub(crate) local_comm: Arc<LocalCommService<B>>,
     sessions: Mutex<HashMap<SessionId, Session>>,
@@ -50,19 +50,19 @@ struct Session {
     receiver: Option<mpsc::Receiver<TaskResponse>>,
 }
 
-impl<B, P> SessionManager<B, P>
+impl<B, T> SessionManager<B, T>
 where
     B: BackendIr,
-    P: Protocol,
+    T: TensorTransfer<B>,
 {
-    pub fn new(devices: Vec<Device<B>>, external_comm: Arc<ExternalCommService<B, P>>) -> Self {
+    pub fn new(devices: Vec<Device<B>>, transfer: Arc<T>) -> Self {
         assert!(
             !devices.is_empty(),
             "A remote server must host at least one device"
         );
         Self {
             devices,
-            external_comm,
+            transfer,
             local_comm: Arc::new(LocalCommService::new()),
             sessions: Mutex::new(HashMap::new()),
         }
@@ -105,7 +105,7 @@ where
                 session_id,
                 runner,
                 sender,
-                self.external_comm.clone(),
+                self.transfer.clone(),
                 self.local_comm.clone(),
             );
             Session {
@@ -117,10 +117,10 @@ where
     }
 }
 
-impl<B, P> SubmitService for SessionManager<B, P>
+impl<B, T> SubmitService for SessionManager<B, T>
 where
     B: BackendIr,
-    P: Protocol,
+    T: TensorTransfer<B>,
 {
     /// Resolve the channel used to forward [`Task`]s to `session_id`'s dispatcher thread,
     /// creating the session (and spawning its handler) on demand. The request loop resolves
@@ -145,10 +145,10 @@ where
     }
 }
 
-impl<B, P> FetchService for SessionManager<B, P>
+impl<B, T> FetchService for SessionManager<B, T>
 where
     B: BackendIr,
-    P: Protocol,
+    T: TensorTransfer<B>,
 {
     /// The device settings for `device_index`, used by the response-init handshake before any
     /// session-specific runner is needed.

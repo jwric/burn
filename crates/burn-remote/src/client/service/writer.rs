@@ -1,7 +1,7 @@
 //! Outgoing-frame writer task.
 
+use crate::client::service::{ServiceRuntime, SubmitChannel};
 use crate::shared::RemoteMessage;
-use burn_communication::{CommunicationChannel, Message, ProtocolClient};
 use tokio::sync::mpsc;
 
 /// Bound on task batches queued for the writer task.
@@ -31,10 +31,7 @@ pub(crate) struct SubmitWriter {
 
 impl SubmitWriter {
     /// Spawn the writer task on `runtime`, taking ownership of the submit `channel`.
-    pub(crate) fn spawn<C: ProtocolClient>(
-        runtime: &tokio::runtime::Runtime,
-        mut channel: C::Channel,
-    ) -> Self {
+    pub(crate) fn spawn(runtime: &ServiceRuntime, mut channel: SubmitChannel) -> Self {
         let (tx, mut rx) = mpsc::channel::<Vec<RemoteMessage>>(WRITE_QUEUE_CAP);
         let handle = runtime.spawn(async move {
             while let Some(batch) = rx.recv().await {
@@ -45,11 +42,12 @@ impl SubmitWriter {
                         continue;
                     }
                 };
-                if let Err(err) = channel.send(Message::new(bytes)).await {
+                if let Err(err) = channel.send(bytes).await {
                     log::warn!("Remote submit writer send failed: {err:?}; closing writer");
                     return;
                 }
             }
+            let _ = channel.close().await;
         });
         Self {
             tx: Some(tx),
@@ -62,7 +60,7 @@ impl SubmitWriter {
     /// Fast path is a non-blocking [`try_send`](mpsc::Sender::try_send) — no tokio runtime
     /// hop. Only when the writer has fallen [`WRITE_QUEUE_CAP`] batches behind (socket
     /// backpressure) do we block the runner thread waiting for room.
-    pub(crate) fn send(&self, runtime: &tokio::runtime::Runtime, batch: Vec<RemoteMessage>) {
+    pub(crate) fn send(&self, runtime: &ServiceRuntime, batch: Vec<RemoteMessage>) {
         let Some(tx) = self.tx.as_ref() else {
             log::warn!("Remote submit writer already shut down; dropping outgoing batch");
             return;
@@ -93,7 +91,7 @@ impl SubmitWriter {
     /// drains and exits, then join it so the runtime isn't torn down mid-send.
     pub(crate) fn shutdown(
         &mut self,
-        runtime: &tokio::runtime::Runtime,
+        runtime: &ServiceRuntime,
         final_batch: Option<Vec<RemoteMessage>>,
     ) {
         if let (Some(batch), Some(tx)) = (final_batch, self.tx.as_ref()) {

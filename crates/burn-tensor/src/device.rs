@@ -331,10 +331,10 @@ impl Device {
         Self::new(burn_dispatch::devices::LibTorchDevice::Vulkan)
     }
 
-    /// Remote device identified by a network address (e.g. `"ws://127.0.0.1:3000"`) and the
-    /// index of the device to select on that server.
+    /// Legacy WebSocket remote device identified by a network address and device index.
     ///
-    /// Requires a running [`burn-remote`](burn_dispatch::backends::remote) server at the given
+    /// New integrations should prefer [`Device::remote_iroh`]. This compatibility API requires
+    /// a running [`burn-remote`](burn_dispatch::backends::remote) WebSocket server at the given
     /// address. Operations on tensors created with this device are shipped to the server and
     /// executed there. The `index` selects which of the server's devices to use (the server
     /// hosts all of its backend's devices); use [`DeviceIndex::Default`] for the server's
@@ -351,6 +351,36 @@ impl Device {
         let index = index.into().resolve();
         let device = burn_dispatch::devices::RemoteDevice::new(address, index);
         device.connect(); // initializes the connection (required to get the device default settings)
+        Self::new(device)
+    }
+
+    /// Iroh peer-to-peer remote device.
+    ///
+    /// `node` owns the local endpoint identity, relay configuration, address lookup, and shared
+    /// peer connection pool. `peer` identifies the compute node and may include direct/relay
+    /// dialing hints.
+    #[cfg(feature = "remote")]
+    pub fn remote_iroh(
+        node: &burn_dispatch::backends::remote::RemoteNode,
+        peer: burn_dispatch::backends::remote::EndpointAddr,
+        index: impl Into<DeviceIndex>,
+    ) -> Self {
+        let index = index.into().resolve();
+        let device = node.device(peer, index);
+        device.connect();
+        Self::new(device)
+    }
+
+    /// Iroh remote device created from control-plane-issued connection material.
+    #[cfg(feature = "remote")]
+    pub fn remote_ticket(
+        node: &burn_dispatch::backends::remote::RemoteNode,
+        ticket: &burn_dispatch::backends::remote::RemoteTicket,
+        index: impl Into<DeviceIndex>,
+    ) -> Self {
+        let index = index.into().resolve();
+        let device = node.device_from_ticket(ticket, index);
+        device.connect();
         Self::new(device)
     }
 
