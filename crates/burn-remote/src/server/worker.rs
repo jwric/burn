@@ -30,12 +30,12 @@
 
 use std::sync::Arc;
 
-use burn_communication::{Protocol, external_comm::ExternalCommService};
 use burn_ir::BackendIr;
 use burn_router::{RouterClient, TensorInterpreter};
 use tokio::{runtime::Handle, sync::mpsc};
 
 use crate::server::local_comm::LocalCommService;
+use crate::server::transfer::TensorTransfer;
 use crate::shared::{RequestId, SessionId, Task, TaskResponse, TaskResponseContent};
 
 /// Capacity of the per-session task channel feeding the worker thread.
@@ -51,22 +51,22 @@ const TASK_CHANNEL_CAPACITY: usize = 64;
 /// Owned by the session's worker thread, which runs every task against this one interpreter and
 /// these comm services. Held behind an [`Arc`] only so detached readback tasks can be spawned with
 /// a clone of the result sender; the interpreter itself is single-owner here.
-pub(crate) struct SessionHandler<B, P>
+pub(crate) struct SessionHandler<B, T>
 where
     B: BackendIr,
-    P: Protocol,
+    T: TensorTransfer<B>,
 {
     session_id: SessionId,
     runner: TensorInterpreter<B>,
     response_sender: mpsc::Sender<TaskResponse>,
-    external_comm: Arc<ExternalCommService<B, P>>,
+    transfer: Arc<T>,
     local_comm: Arc<LocalCommService<B>>,
 }
 
-impl<B, P> SessionHandler<B, P>
+impl<B, T> SessionHandler<B, T>
 where
     B: BackendIr,
-    P: Protocol,
+    T: TensorTransfer<B>,
 {
     /// Create a session's handler and spawn its worker thread, returning the inbound task sender
     /// the submit handler forwards to.
@@ -82,7 +82,7 @@ where
         session_id: SessionId,
         runner: TensorInterpreter<B>,
         response_sender: mpsc::Sender<TaskResponse>,
-        external_comm: Arc<ExternalCommService<B, P>>,
+        transfer: Arc<T>,
         local_comm: Arc<LocalCommService<B>>,
     ) -> mpsc::Sender<Task> {
         let handle = Handle::current();
@@ -90,7 +90,7 @@ where
             session_id,
             runner,
             response_sender,
-            external_comm,
+            transfer,
             local_comm,
         };
 
@@ -185,17 +185,17 @@ where
             Task::RegisterTensorRemote(stream_id, remote, new_id) => {
                 log::trace!(
                     "Registering remote tensor (transfer {:?} from {:?})",
-                    remote.transfer_id,
-                    remote.address,
+                    remote.capability,
+                    remote.peer,
                 );
                 let data = self
-                    .external_comm
-                    .download_tensor(remote.address.clone(), remote.transfer_id)
+                    .transfer
+                    .download_tensor(remote.peer.clone(), remote.capability)
                     .await
                     .ok_or_else(|| {
                         format!(
                             "Failed to download tensor for transfer {:?} from {:?}",
-                            remote.transfer_id, remote.address,
+                            remote.capability, remote.peer,
                         )
                     })?;
                 // Register on the client stream that will consume `new_id`, carried over the
@@ -237,25 +237,30 @@ where
                 stream_id,
                 tensor,
                 count,
-                transfer_id,
+                capability,
+                target,
             } => {
-                log::trace!("Exposing tensor (transfer {transfer_id:?})");
+                log::trace!("Exposing tensor (transfer {capability:?})");
                 // Same shape as `ReadTensor`: the sync part of `read_tensor_async` runs in order
                 // to preserve stream ordering, but the readback + expose are detached so a
                 // cross-server hand-off doesn't stall this session's op registration on a
                 // GPU→host copy. A target that downloads before the expose lands simply blocks on
                 // the data service's `new_tensor_notify`, so there is no race.
                 let fut = stream_id.executes(|| runner.read_tensor_async(tensor));
-                let external_comm = self.external_comm.clone();
+                let transfer = self.transfer.clone();
                 tokio::spawn(async move {
                     match fut.await {
                         Ok(data) => {
-                            external_comm.expose_data(data, count, transfer_id).await;
+                            transfer.expose_data(data, count, capability, target).await;
                         }
                         Err(e) => {
-                            log::error!(
-                                "read_tensor_async for transfer {transfer_id:?} failed: {e:?}"
+                            let reason = format!(
+                                "read_tensor_async for transfer {capability:?} failed: {e:?}"
                             );
+                            log::error!(
+                                "read_tensor_async for transfer {capability:?} failed: {e:?}"
+                            );
+                            transfer.fail(capability, target, reason).await;
                         }
                     }
                 });

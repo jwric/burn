@@ -64,7 +64,7 @@ metal = ["wgpu", "burn-wgpu/metal"]
 wgpu = ["burn-wgpu"]
 cpu = ["burn-cpu"]
 autodiff = ["burn-autodiff"]
-remote = ["std", "burn-remote"]
+remote = ["std", "burn-remote", "burn-remote/iroh", "burn-remote/websocket"]
 remote-server = ["remote", "burn-remote/server"]
 
 # Backend features

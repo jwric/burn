@@ -1,35 +1,53 @@
+//! Peer-to-peer remote tensor execution for Burn.
+//!
+//! Iroh is the primary transport. A process-level [`RemoteNode`] owns endpoint identity,
+//! relay/address-lookup configuration, and shared peer connections. Compute sessions use
+//! bidirectional QUIC streams, while cross-peer tensor movement uses independent authenticated
+//! streams without routing payloads through the controlling client.
+//!
+//! The optional `websocket` feature retains the legacy address-and-port transport.
+
 #[cfg(feature = "client")]
 pub(crate) mod client;
 
 #[cfg(feature = "server")]
 pub mod server;
 
+#[cfg(feature = "iroh")]
+mod node;
+mod peer;
 pub(crate) mod shared;
+
+#[cfg(feature = "iroh")]
+pub use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey};
+#[cfg(feature = "iroh")]
+pub use node::{BURN_REMOTE_ALPN, RemoteNode};
+#[cfg(feature = "iroh")]
+pub use peer::RemoteTicket;
+pub use peer::{PeerAddr, PeerId};
 
 #[cfg(feature = "client")]
 mod __client {
     use super::*;
 
-    use crate::{client::RemoteChannel, shared::RemoteProtocol};
-    use burn_communication::Protocol;
+    use crate::client::RemoteChannel;
     use burn_router::BackendRouter;
 
     /// The remote backend allows you to run computation on a remote device.
     ///
-    /// Make sure there is a running server before trying to connect to it.
-    /// The recommended way to start one is via `burn::server::start` (requires
-    /// the `server` feature on `burn`):
+    /// Iroh is the primary transport. Applications create one process-level [`RemoteNode`],
+    /// resolve a compute peer through their own discovery/control plane, and construct devices
+    /// through [`RemoteNode::device`] or [`RemoteNode::device_from_ticket`].
     ///
     /// ```rust, ignore
-    /// use burn::{Device, server::{start, Channel}};
+    /// use burn::backend::remote::RemoteNode;
     ///
-    /// start(Device::default(), Channel::WebSocket { port: 3000 });
+    /// let node = RemoteNode::bind().await?;
+    /// let remote = node.device(compute_peer, 0);
     /// ```
     ///
-    /// For backends that aren't part of `DispatchDevice` but implement
-    /// `BackendIr`, call [`server::start_websocket`] directly with the
-    /// concrete backend type parameter.
-    pub type RemoteBackend = BackendRouter<RemoteChannel<<RemoteProtocol as Protocol>::Client>>;
+    /// The `websocket` feature retains the legacy address-and-port API for compatibility.
+    pub type RemoteBackend = BackendRouter<RemoteChannel>;
 
     pub use client::RemoteDevice;
 }
@@ -147,7 +165,7 @@ mod tests {
     /// running simultaneously and each iteration moving a tensor to the *other* device and back.
     ///
     /// This used to deadlock because the client's transfer-id counter never persisted its
-    /// increment (`TensorTransferId` is `Copy`, so the increment landed on a throwaway local).
+    /// increment (`LocalTransferId` is `Copy`, so the increment landed on a throwaway local).
     /// Every same-host transfer after the first reused the same id; sequentially that's harmless
     /// (each expose is taken before the next), but two transfers in flight at once then collided
     /// in the server's `local_comm` rendezvous and one `take` hung forever. Single-threaded
@@ -297,10 +315,10 @@ mod tests {
     #[test]
     fn test_client_disconnect_handled_cleanly_by_server() {
         use crate::shared::{RemoteMessage, SessionId, Task};
-        use burn_communication::{CommunicationChannel, Message, Protocol, ProtocolClient};
+        use burn_communication::{CommunicationChannel, Message, ProtocolClient};
         use std::str::FromStr;
 
-        type Client = <crate::shared::RemoteProtocol as Protocol>::Client;
+        type Client = burn_communication::websocket::WsClient;
 
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_io()
@@ -334,7 +352,9 @@ mod tests {
                 };
 
                 submit
-                    .send(frame(vec![RemoteMessage::Init(session_id, 0)]))
+                    .send(frame(vec![RemoteMessage::Init(
+                        crate::shared::SessionInit::new(session_id, 0, vec![]),
+                    )]))
                     .await
                     .expect("send init");
                 submit

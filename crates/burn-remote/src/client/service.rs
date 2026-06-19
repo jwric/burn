@@ -1,20 +1,17 @@
+use crate::PeerAddr;
 use crate::shared::{
-    RemoteMessage, RequestId, SessionId, Task, TaskResponse, TaskResponseContent, TensorRemote,
+    LocalTransferId, PROTOCOL_VERSION, RemoteMessage, RequestId, SessionId, SessionInfo,
+    SessionInit, Task, TaskResponse, TaskResponseContent, TensorRemote, TransferCapability,
 };
 use burn_backend::{
     DTypeUsageSet, ExecutionError, TensorData,
     backend::{DeviceId, DeviceService, ServerUtilitiesHandle},
 };
-use burn_communication::{
-    Address, CommunicationChannel, Message, ProtocolClient, external_comm::TensorTransferId,
-};
+#[cfg(feature = "websocket")]
+use burn_communication::{CommunicationChannel, Message, ProtocolClient};
 use burn_ir::{OperationIr, TensorId, TensorIr};
 use burn_std::{DType, DeviceSettings, backtrace::BackTrace, id::StreamId};
-use std::{
-    marker::PhantomData,
-    str::FromStr,
-    sync::{Arc, OnceLock},
-};
+use std::sync::{Arc, OnceLock};
 use tokio::sync::oneshot;
 
 mod batch;
@@ -26,9 +23,87 @@ use batch::OutgoingBatch;
 use pending::{PendingResponses, Responder};
 use writer::SubmitWriter;
 
+pub(crate) use registry::{RemoteEndpoint, endpoint_for, register_endpoint};
 use registry::{device_count_cell, settings_cell};
 pub(crate) use registry::{device_count_for, has_settings, new_tensor_id, settings_for};
-pub use registry::{endpoint_to_id, id_to_endpoint};
+
+pub(crate) enum SubmitChannel {
+    #[cfg(feature = "iroh")]
+    Iroh(iroh::endpoint::SendStream),
+    #[cfg(feature = "websocket")]
+    WebSocket(Box<burn_communication::websocket::WsClientChannel>),
+}
+
+impl SubmitChannel {
+    pub(crate) async fn send(&mut self, bytes: bytes::Bytes) -> Result<(), String> {
+        match self {
+            #[cfg(feature = "iroh")]
+            Self::Iroh(stream) => crate::node::send_frame(stream, &bytes).await,
+            #[cfg(feature = "websocket")]
+            Self::WebSocket(channel) => channel
+                .send(Message::new(bytes))
+                .await
+                .map_err(|err| err.to_string()),
+        }
+    }
+
+    async fn close(&mut self) -> Result<(), String> {
+        match self {
+            #[cfg(feature = "iroh")]
+            Self::Iroh(stream) => stream
+                .finish()
+                .map_err(|err| format!("Failed to finish Iroh session stream: {err}")),
+            #[cfg(feature = "websocket")]
+            Self::WebSocket(channel) => channel.close().await.map_err(|err| err.to_string()),
+        }
+    }
+}
+
+enum ResponseChannel {
+    #[cfg(feature = "iroh")]
+    Iroh(iroh::endpoint::RecvStream),
+    #[cfg(feature = "websocket")]
+    WebSocket(Box<burn_communication::websocket::WsClientChannel>),
+}
+
+impl ResponseChannel {
+    #[allow(unused_variables)]
+    async fn send(&mut self, bytes: bytes::Bytes) -> Result<(), String> {
+        match self {
+            #[cfg(feature = "iroh")]
+            Self::Iroh(_) => Err("Cannot send through an Iroh receive stream".into()),
+            #[cfg(feature = "websocket")]
+            Self::WebSocket(channel) => channel
+                .send(Message::new(bytes))
+                .await
+                .map_err(|err| err.to_string()),
+        }
+    }
+
+    async fn recv(&mut self) -> Result<Option<bytes::Bytes>, String> {
+        match self {
+            #[cfg(feature = "iroh")]
+            Self::Iroh(stream) => crate::node::recv_frame(stream)
+                .await
+                .map(|frame| frame.map(bytes::Bytes::from)),
+            #[cfg(feature = "websocket")]
+            Self::WebSocket(channel) => channel
+                .recv()
+                .await
+                .map(|message| message.map(|message| message.data))
+                .map_err(|err| err.to_string()),
+        }
+    }
+
+    fn requires_init(&self) -> bool {
+        match self {
+            #[cfg(feature = "iroh")]
+            Self::Iroh(_) => false,
+            #[cfg(feature = "websocket")]
+            Self::WebSocket(_) => true,
+        }
+    }
+}
 
 /// Flush the outgoing task buffer when this many tasks have accumulated.
 ///
@@ -60,13 +135,13 @@ const FLUSH_THRESHOLD: usize = 32;
 /// All tokio work — connecting, the writer task, awaiting responses, the response-demux
 /// task — happens inside the runtime owned by this struct. The caller never sees a runtime
 /// handle.
-pub struct RemoteService<C: ProtocolClient> {
-    runtime: tokio::runtime::Runtime,
+pub struct RemoteService {
+    runtime: ServiceRuntime,
     /// Where to connect on first use. The connection is established lazily (see
     /// [`ensure_connected`](Self::ensure_connected)) rather than in [`init`](Self::init),
     /// because cubecl holds a process-global device-registry lock across `init` — opening the
     /// sockets there would serialize every remote device's setup behind that lock.
-    address: Address,
+    endpoint: RemoteEndpoint,
     device_index: u32,
     /// Owns the request socket and serializes outgoing frames off the runner thread.
     /// `None` until the first task (or a settings read) triggers the lazy connect.
@@ -81,15 +156,12 @@ pub struct RemoteService<C: ProtocolClient> {
     device_count: Arc<OnceLock<u32>>,
     session_id: SessionId,
     closed: bool,
-    /// The request channel (`C::Channel`) lives in the writer task, not in this struct, so
-    /// nothing else carries `C`. Keep the parameter pinned to the service.
-    _p: PhantomData<C>,
 }
 
-impl<C: ProtocolClient> DeviceService for RemoteService<C> {
+impl DeviceService for RemoteService {
     fn init(device_id: DeviceId) -> Self {
-        let (id, address, device_index) = Self::resolve_endpoint(device_id);
-        let runtime = build_runtime();
+        let (id, endpoint, device_index) = Self::resolve_endpoint(device_id);
+        let runtime = ServiceRuntime::for_endpoint(&endpoint);
         let session_id = SessionId::new();
 
         // Lazy connect: `init` must return promptly. cubecl holds a process-global
@@ -100,7 +172,7 @@ impl<C: ProtocolClient> DeviceService for RemoteService<C> {
         // lock and on the device-runner thread (see `ensure_connected`).
         Self {
             runtime,
-            address,
+            endpoint,
             device_index,
             writer: None,
             batch: OutgoingBatch::new(FLUSH_THRESHOLD),
@@ -109,7 +181,6 @@ impl<C: ProtocolClient> DeviceService for RemoteService<C> {
             device_count: device_count_cell(id),
             session_id,
             closed: false,
-            _p: PhantomData,
         }
     }
 
@@ -125,82 +196,159 @@ impl<C: ProtocolClient> DeviceService for RemoteService<C> {
 /// Build the multi-threaded tokio runtime that hosts the connection, the writer task, and
 /// the response-demux task. IO is enabled for the websocket; the runner thread enters it
 /// only via `block_on`.
+#[cfg(feature = "websocket")]
 fn build_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()
         .enable_io()
+        .enable_time()
         .build()
         .expect("Can build tokio runtime for remote service")
 }
 
+pub(crate) enum ServiceRuntime {
+    #[cfg(feature = "iroh")]
+    Shared(tokio::runtime::Handle),
+    #[cfg(feature = "websocket")]
+    Owned(tokio::runtime::Runtime),
+}
+
+impl ServiceRuntime {
+    fn for_endpoint(endpoint: &RemoteEndpoint) -> Self {
+        match endpoint {
+            #[cfg(feature = "iroh")]
+            RemoteEndpoint::Iroh { node, .. } => Self::Shared(node.runtime()),
+            #[cfg(feature = "websocket")]
+            RemoteEndpoint::WebSocket { .. } => Self::Owned(build_runtime()),
+        }
+    }
+
+    pub(crate) fn block_on<F: core::future::Future>(&self, future: F) -> F::Output {
+        match self {
+            #[cfg(feature = "iroh")]
+            Self::Shared(handle) => handle.block_on(future),
+            #[cfg(feature = "websocket")]
+            Self::Owned(runtime) => runtime.block_on(future),
+        }
+    }
+
+    pub(crate) fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: core::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        match self {
+            #[cfg(feature = "iroh")]
+            Self::Shared(handle) => handle.spawn(future),
+            #[cfg(feature = "websocket")]
+            Self::Owned(runtime) => runtime.spawn(future),
+        }
+    }
+}
+
 /// Construction helpers for [`RemoteService::init`], one per step of bringing a connection
 /// up. Kept separate from the public submit-style API below.
-impl<C: ProtocolClient> RemoteService<C> {
+impl RemoteService {
     /// Resolve a device id to its registry index, parsed network [`Address`], and the device
     /// index to select on the server.
-    fn resolve_endpoint(device_id: DeviceId) -> (u32, Address, u32) {
+    fn resolve_endpoint(device_id: DeviceId) -> (u32, RemoteEndpoint, u32) {
         let id = device_id.index_id as u32;
-        let (address_str, device_index) = id_to_endpoint(id)
+        let (endpoint, device_index) = endpoint_for(id)
             .unwrap_or_else(|| panic!("No endpoint registered for device id {device_id}"));
-        let address = Address::from_str(&address_str)
-            .unwrap_or_else(|_| panic!("Could not parse registered address `{address_str}`"));
-        (id, address, device_index)
+        (id, endpoint, device_index)
     }
 
     /// Open the submit and fetch channels. Done synchronously so a missing server surfaces here
     /// rather than on the first op, and the demux/writer tasks can be spawned on already-open
     /// streams.
     fn connect_streams(
-        runtime: &tokio::runtime::Runtime,
-        address: &Address,
-    ) -> (C::Channel, C::Channel) {
-        runtime.block_on(async {
-            let submit = C::connect(address.clone(), "submit")
-                .await
-                .unwrap_or_else(|err| panic!("{}", connect_error("submit", address, &err)));
-            let fetch = C::connect(address.clone(), "fetch")
-                .await
-                .unwrap_or_else(|err| panic!("{}", connect_error("fetch", address, &err)));
-            (submit, fetch)
-        })
+        runtime: &ServiceRuntime,
+        endpoint: &RemoteEndpoint,
+    ) -> (SubmitChannel, ResponseChannel) {
+        runtime
+            .block_on(async {
+                match endpoint {
+                    #[cfg(feature = "iroh")]
+                    RemoteEndpoint::Iroh { node, peer, .. } => {
+                        let (send, recv) = node
+                            .open_stream(
+                                &PeerAddr::Iroh(peer.clone()),
+                                crate::node::StreamKind::Session,
+                            )
+                            .await?;
+                        Ok((SubmitChannel::Iroh(send), ResponseChannel::Iroh(recv)))
+                    }
+                    #[cfg(feature = "websocket")]
+                    RemoteEndpoint::WebSocket { address, .. } => {
+                        use burn_communication::websocket::WsClient;
+                        let submit = WsClient::connect(address.clone(), "submit")
+                            .await
+                            .map_err(|err| connect_error("submit", &endpoint.peer_addr(), &err))?;
+                        let fetch = WsClient::connect(address.clone(), "fetch")
+                            .await
+                            .map_err(|err| connect_error("fetch", &endpoint.peer_addr(), &err))?;
+                        Ok((
+                            SubmitChannel::WebSocket(Box::new(submit)),
+                            ResponseChannel::WebSocket(Box::new(fetch)),
+                        ))
+                    }
+                }
+            })
+            .unwrap_or_else(|err: String| panic!("{err}"))
     }
 
     /// Send the session-init handshake on both streams and wait for the device settings the
     /// server replies with on the response stream. Both streams carry the same `Vec<RemoteMessage>`
     /// wire format; the handshake is just a single-element batch.
     fn handshake(
-        runtime: &tokio::runtime::Runtime,
-        request: &mut C::Channel,
-        response: &mut C::Channel,
-        address: &Address,
+        runtime: &ServiceRuntime,
+        request: &mut SubmitChannel,
+        response: &mut ResponseChannel,
+        endpoint: &RemoteEndpoint,
         session_id: SessionId,
         device_index: u32,
     ) -> (DeviceSettings, u32) {
-        let init_bytes: bytes::Bytes =
-            rmp_serde::to_vec(&vec![RemoteMessage::Init(session_id, device_index)])
-                .expect("Can serialize RemoteMessage::Init")
-                .into();
+        let init_bytes: bytes::Bytes = rmp_serde::to_vec(&vec![RemoteMessage::Init(
+            SessionInit::new(session_id, device_index, endpoint.authorization().to_vec()),
+        )])
+        .expect("Can serialize RemoteMessage::Init")
+        .into();
 
         runtime
             .block_on(async {
-                request.send(Message::new(init_bytes.clone())).await?;
-                response.send(Message::new(init_bytes)).await?;
+                request.send(init_bytes.clone()).await?;
+                if response.requires_init() {
+                    response.send(init_bytes).await?;
+                }
 
                 let msg = response
                     .recv()
                     .await?
                     .expect("Server disconnected during initialization");
-                let reply: TaskResponse = rmp_serde::from_slice(&msg.data)
+                let reply: TaskResponse = rmp_serde::from_slice(&msg)
                     .expect("Can deserialize init handshake payload");
 
                 match reply.content {
-                    TaskResponseContent::Init(settings, device_count) => {
-                        Ok::<_, C::Error>((settings, device_count))
+                    TaskResponseContent::Init(SessionInfo {
+                        version,
+                        settings,
+                        device_count,
+                        ..
+                    }) => {
+                        if version != PROTOCOL_VERSION {
+                            panic!(
+                                "Server uses Burn Remote protocol version {version}, expected {PROTOCOL_VERSION}"
+                            );
+                        }
+                        Ok::<_, String>((settings, device_count))
                     }
                     other => panic!("Expected Init response, got {other:?}"),
                 }
             })
             .unwrap_or_else(|err| {
-                panic!("Failed to initialize remote session at {address}: {err:?}")
+                panic!(
+                    "Failed to initialize remote session at {}: {err}",
+                    endpoint.peer_addr()
+                )
             })
     }
 
@@ -208,15 +356,15 @@ impl<C: ProtocolClient> RemoteService<C> {
     /// [`RequestId`] via the [`Responder`]. Lives on the service runtime; exits when the
     /// response stream closes.
     fn spawn_response_demux(
-        runtime: &tokio::runtime::Runtime,
-        mut response: C::Channel,
+        runtime: &ServiceRuntime,
+        mut response: ResponseChannel,
         responder: Responder,
     ) {
         runtime.spawn(async move {
             loop {
                 match response.recv().await {
                     Ok(Some(msg)) => {
-                        let reply: TaskResponse = match rmp_serde::from_slice(&msg.data) {
+                        let reply: TaskResponse = match rmp_serde::from_slice(&msg) {
                             Ok(r) => r,
                             Err(err) => {
                                 log::error!("Failed to deserialize remote response: {err:?}");
@@ -247,14 +395,15 @@ impl<C: ProtocolClient> RemoteService<C> {
 }
 
 /// Actionable panic message for a failed channel connect.
-fn connect_error<E: std::fmt::Debug>(route: &str, address: &Address, err: &E) -> String {
+#[cfg(feature = "websocket")]
+fn connect_error<E: std::fmt::Debug>(route: &str, peer: &PeerAddr, err: &E) -> String {
     format!(
-        "Failed to open remote '{route}' channel to {address}: {err:?}. \
-         Is a `burn-remote` server running at that address?"
+        "Failed to open remote '{route}' channel to {peer}: {err:?}. \
+         Is a `burn-remote` compute node running at that peer?"
     )
 }
 
-impl<C: ProtocolClient> RemoteService<C> {
+impl RemoteService {
     /// Buffer a fire-and-forget op. The buffer is flushed automatically once it reaches
     /// [`FLUSH_THRESHOLD`] entries.
     pub fn register_op(&mut self, stream_id: StreamId, op: OperationIr) {
@@ -292,13 +441,15 @@ impl<C: ProtocolClient> RemoteService<C> {
         stream_id: StreamId,
         tensor: TensorIr,
         count: u32,
-        transfer_id: TensorTransferId,
+        capability: TransferCapability,
+        target: crate::PeerId,
     ) {
         self.submit_task(Task::ExposeTensorRemote {
             stream_id,
             tensor,
             count,
-            transfer_id,
+            capability,
+            target,
         });
         self.flush();
     }
@@ -311,7 +462,7 @@ impl<C: ProtocolClient> RemoteService<C> {
         &mut self,
         stream_id: StreamId,
         tensor: TensorIr,
-        transfer_id: TensorTransferId,
+        transfer_id: LocalTransferId,
     ) {
         self.submit_task(Task::ExposeTensorLocal {
             stream_id,
@@ -328,7 +479,7 @@ impl<C: ProtocolClient> RemoteService<C> {
     pub fn register_tensor_local(
         &mut self,
         stream_id: StreamId,
-        transfer_id: TensorTransferId,
+        transfer_id: LocalTransferId,
         new_id: TensorId,
     ) {
         self.submit_task(Task::RegisterTensorLocal {
@@ -432,15 +583,15 @@ impl<C: ProtocolClient> RemoteService<C> {
 
         log::debug!(
             "Connecting to {} (device {}) ...",
-            self.address,
+            self.endpoint.peer_addr(),
             self.device_index
         );
-        let (mut request, mut response) = Self::connect_streams(&self.runtime, &self.address);
+        let (mut request, mut response) = Self::connect_streams(&self.runtime, &self.endpoint);
         let (settings, device_count) = Self::handshake(
             &self.runtime,
             &mut request,
             &mut response,
-            &self.address,
+            &self.endpoint,
             self.session_id,
             self.device_index,
         );
@@ -450,7 +601,7 @@ impl<C: ProtocolClient> RemoteService<C> {
         let _ = self.device_count.set(device_count);
 
         Self::spawn_response_demux(&self.runtime, response, self.pending.responder());
-        self.writer = Some(SubmitWriter::spawn::<C>(&self.runtime, request));
+        self.writer = Some(SubmitWriter::spawn(&self.runtime, request));
     }
 
     /// Hand whatever's currently buffered to the writer task as one batch (the writer
@@ -471,7 +622,7 @@ impl<C: ProtocolClient> RemoteService<C> {
     }
 }
 
-impl<C: ProtocolClient> Drop for RemoteService<C> {
+impl Drop for RemoteService {
     fn drop(&mut self) {
         if self.closed {
             return;

@@ -119,5 +119,5 @@ pub mod devices {
     pub use burn_tch::LibTorchDevice;
 
     #[cfg(feature = "remote")]
-    pub use burn_remote::RemoteDevice;
+    pub use burn_remote::{RemoteDevice, RemoteNode};
 }
