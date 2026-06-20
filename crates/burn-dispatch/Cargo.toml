@@ -64,7 +64,10 @@ metal = ["wgpu", "burn-wgpu/metal"]
 wgpu = ["burn-wgpu"]
 cpu = ["burn-cpu"]
 autodiff = ["burn-autodiff"]
-remote = ["std", "burn-remote", "burn-remote/iroh", "burn-remote/websocket"]
+# Iroh-only remote client. This is the wasm-compatible path: no websocket, no server.
+remote-iroh = ["std", "burn-remote", "burn-remote/iroh"]
+# Full remote client: Iroh plus the legacy websocket transport.
+remote = ["remote-iroh", "burn-remote/websocket"]
 remote-server = ["remote", "burn-remote/server"]
 
 # Backend features

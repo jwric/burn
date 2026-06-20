@@ -32,7 +32,9 @@ const MAX_FRAME_SIZE: usize = 1024 * 1024 * 1024;
 
 struct RemoteNodeInner {
     endpoint: Endpoint,
-    #[cfg(feature = "client")]
+    // Native clients drive their session tasks on the Tokio runtime that owns the endpoint.
+    // In the browser those tasks run on the JS event loop, so no handle is stored.
+    #[cfg(all(feature = "client", not(target_family = "wasm")))]
     runtime: tokio::runtime::Handle,
     connections: Mutex<HashMap<EndpointId, Arc<OnceCell<Connection>>>>,
 }
@@ -69,20 +71,28 @@ impl RemoteNode {
     /// Applications serving Burn Remote must include [`BURN_REMOTE_ALPN`] in the endpoint's
     /// accepted ALPN list, or route that ALPN to Burn's protocol handler.
     pub fn from_endpoint(endpoint: Endpoint) -> Self {
+        // On native client builds the session tasks are spawned onto the runtime that owns the
+        // endpoint, so capture its handle. The wasm and server-only builds don't need one.
+        #[cfg(all(feature = "client", not(target_family = "wasm")))]
         let runtime = tokio::runtime::Handle::try_current().expect(
             "RemoteNode::from_endpoint must be called from the Tokio runtime that owns the Iroh endpoint",
         );
-        Self::from_endpoint_on(endpoint, runtime)
-    }
-
-    /// Use an application-configured endpoint with an explicit executor handle.
-    pub fn from_endpoint_on(endpoint: Endpoint, runtime: tokio::runtime::Handle) -> Self {
-        #[cfg(not(feature = "client"))]
-        let _ = runtime;
         Self {
             inner: Arc::new(RemoteNodeInner {
                 endpoint,
-                #[cfg(feature = "client")]
+                #[cfg(all(feature = "client", not(target_family = "wasm")))]
+                runtime,
+                connections: Mutex::new(HashMap::new()),
+            }),
+        }
+    }
+
+    /// Use an application-configured endpoint with an explicit executor handle.
+    #[cfg(all(feature = "client", not(target_family = "wasm")))]
+    pub fn from_endpoint_on(endpoint: Endpoint, runtime: tokio::runtime::Handle) -> Self {
+        Self {
+            inner: Arc::new(RemoteNodeInner {
+                endpoint,
                 runtime,
                 connections: Mutex::new(HashMap::new()),
             }),
@@ -99,7 +109,7 @@ impl RemoteNode {
         &self.inner.endpoint
     }
 
-    #[cfg(feature = "client")]
+    #[cfg(all(feature = "client", not(target_family = "wasm")))]
     pub(crate) fn runtime(&self) -> tokio::runtime::Handle {
         self.inner.runtime.clone()
     }
@@ -149,6 +159,11 @@ impl RemoteNode {
         peer: &PeerAddr,
         kind: StreamKind,
     ) -> Result<(SendStream, RecvStream), String> {
+        // Only the Iroh variant remains when the websocket transport is compiled out.
+        #[cfg_attr(
+            not(feature = "websocket"),
+            allow(clippy::infallible_destructuring_match)
+        )]
         let peer = match peer {
             PeerAddr::Iroh(peer) => peer,
             #[cfg(feature = "websocket")]

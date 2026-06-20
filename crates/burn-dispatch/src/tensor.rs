@@ -234,7 +234,7 @@ pub enum DispatchTensorKind {
     LibTorch(BackendTensor<LibTorch>),
 
     /// The [Remote backend](Remote) tensor (lives on a remote server).
-    #[cfg(feature = "remote")]
+    #[cfg(feature = "remote-iroh")]
     Remote(BackendTensor<Remote>),
 
     /// The [autodiff enabled backend](Autodiff) tensor.
@@ -267,7 +267,7 @@ impl TensorMetadata for DispatchTensorKind {
             Self::NdArray(tensor) => tensor.dtype(),
             #[cfg(feature = "tch")]
             Self::LibTorch(tensor) => tensor.dtype(),
-            #[cfg(feature = "remote")]
+            #[cfg(feature = "remote-iroh")]
             Self::Remote(tensor) => tensor.dtype(),
             #[cfg(feature = "autodiff")]
             Self::Autodiff(tensor) => tensor.dtype(),
@@ -296,7 +296,7 @@ impl TensorMetadata for DispatchTensorKind {
             Self::NdArray(tensor) => tensor.shape(),
             #[cfg(feature = "tch")]
             Self::LibTorch(tensor) => tensor.shape(),
-            #[cfg(feature = "remote")]
+            #[cfg(feature = "remote-iroh")]
             Self::Remote(tensor) => tensor.shape(),
             #[cfg(feature = "autodiff")]
             Self::Autodiff(tensor) => tensor.shape(),
@@ -387,7 +387,7 @@ impl DispatchTensorKind {
             DispatchTensorKind::NdArray(_) => "NdArray",
             #[cfg(feature = "tch")]
             DispatchTensorKind::LibTorch(_) => "LibTorch",
-            #[cfg(feature = "remote")]
+            #[cfg(feature = "remote-iroh")]
             DispatchTensorKind::Remote(_) => "Remote",
             #[cfg(feature = "autodiff")]
             DispatchTensorKind::Autodiff(_) => "Autodiff",
@@ -517,7 +517,7 @@ impl_dispatch_conversion!(Flex, any(feature = "flex", default_backend));
 impl_dispatch_conversion!(Cpu, feature = "cpu");
 impl_dispatch_conversion!(Cuda, feature = "cuda");
 impl_dispatch_conversion!(Rocm, feature = "rocm");
-impl_dispatch_conversion!(Remote, feature = "remote");
+impl_dispatch_conversion!(Remote, feature = "remote-iroh");
 impl_dispatch_conversion!(Metal, feature = "metal");
 impl_dispatch_conversion!(Vulkan, feature = "vulkan");
 impl_dispatch_conversion!(Wgpu, feature = "wgpu");

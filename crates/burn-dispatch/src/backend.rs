@@ -110,7 +110,7 @@ impl Backend for Dispatch {
             DispatchDeviceId::NdArray => NdArray::device_count(backend_type_id),
             #[cfg(feature = "tch")]
             DispatchDeviceId::LibTorch => LibTorch::device_count(backend_type_id),
-            #[cfg(feature = "remote")]
+            #[cfg(feature = "remote-iroh")]
             DispatchDeviceId::Remote => Remote::device_count(backend_type_id),
             _ => unreachable!("No backend feature enabled."),
         }
@@ -181,7 +181,7 @@ impl AutodiffBackend for Dispatch {
                 DispatchTensorKind::NdArray(tensor) => tensor.autodiff().backward(),
                 #[cfg(feature = "tch")]
                 DispatchTensorKind::LibTorch(tensor) => tensor.autodiff().backward(),
-                #[cfg(feature = "remote")]
+                #[cfg(feature = "remote-iroh")]
                 DispatchTensorKind::Remote(tensor) => tensor.autodiff().backward(),
                 DispatchTensorKind::Autodiff(_) => {
                     panic!("Autodiff should not wrap an autodiff tensor.")
@@ -248,7 +248,7 @@ impl AutodiffBackend for Dispatch {
                     .as_autodiff()
                     .grad(grads)
                     .map(|t| DispatchTensorKind::LibTorch(crate::BackendTensor::Float(t))),
-                #[cfg(feature = "remote")]
+                #[cfg(feature = "remote-iroh")]
                 DispatchTensorKind::Remote(tensor) => tensor
                     .as_autodiff()
                     .grad(grads)
@@ -322,7 +322,7 @@ impl AutodiffBackend for Dispatch {
                     .as_autodiff()
                     .grad_remove(grads)
                     .map(|t| DispatchTensorKind::LibTorch(crate::BackendTensor::Float(t))),
-                #[cfg(feature = "remote")]
+                #[cfg(feature = "remote-iroh")]
                 DispatchTensorKind::Remote(tensor) => tensor
                     .as_autodiff()
                     .grad_remove(grads)
@@ -388,7 +388,7 @@ impl AutodiffBackend for Dispatch {
                 (DispatchTensorKind::NdArray(tensor), DispatchTensorKind::NdArray(grad)) => {
                     tensor.as_autodiff().grad_replace(grads, grad.float())
                 }
-                #[cfg(feature = "remote")]
+                #[cfg(feature = "remote-iroh")]
                 (DispatchTensorKind::Remote(tensor), DispatchTensorKind::Remote(grad)) => {
                     tensor.as_autodiff().grad_replace(grads, grad.float())
                 }
@@ -452,7 +452,7 @@ impl AutodiffBackend for Dispatch {
                 DispatchTensorKind::LibTorch(tensor) => DispatchTensorKind::LibTorch(
                     crate::BackendTensor::Float(tensor.autodiff().primitive),
                 ),
-                #[cfg(feature = "remote")]
+                #[cfg(feature = "remote-iroh")]
                 DispatchTensorKind::Remote(tensor) => DispatchTensorKind::Remote(
                     crate::BackendTensor::Float(tensor.autodiff().primitive),
                 ),
@@ -547,7 +547,7 @@ impl AutodiffBackend for Dispatch {
                     Autodiff::<LibTorch>::from_inner(tensor.float()),
                 )),
             )),
-            #[cfg(feature = "remote")]
+            #[cfg(feature = "remote-iroh")]
             DispatchTensorKind::Remote(tensor) => {
                 DispatchTensorKind::Autodiff(Box::new(DispatchTensorKind::Remote(
                     crate::BackendTensor::Autodiff(Autodiff::<Remote>::from_inner(tensor.float())),
@@ -605,7 +605,7 @@ impl AutodiffBackend for Dispatch {
                         )),
                     )))
                 }
-                #[cfg(feature = "remote")]
+                #[cfg(feature = "remote-iroh")]
                 DispatchTensorKind::Remote(tensor) => {
                     DispatchTensorKind::Autodiff(Box::new(DispatchTensorKind::Remote(
                         crate::BackendTensor::Autodiff(Autodiff::<Remote>::set_distributed_params(
@@ -648,7 +648,7 @@ impl AutodiffBackend for Dispatch {
                 DispatchTensorKind::Cuda(tensor) => {
                     tensor.as_autodiff().node.distributed_params.clone()
                 }
-                #[cfg(feature = "remote")]
+                #[cfg(feature = "remote-iroh")]
                 DispatchTensorKind::Remote(tensor) => {
                     tensor.as_autodiff().node.distributed_params.clone()
                 }
@@ -676,7 +676,7 @@ impl AutodiffBackend for Dispatch {
                 DispatchTensorKind::Cuda(tensor) => {
                     tensor.as_autodiff().node.distributed_params.is_some()
                 }
-                #[cfg(feature = "remote")]
+                #[cfg(feature = "remote-iroh")]
                 DispatchTensorKind::Remote(tensor) => {
                     tensor.as_autodiff().node.distributed_params.is_some()
                 }
@@ -751,6 +751,59 @@ impl AutodiffBackend for Dispatch {
     }
 }
 
+
+impl DispatchTensorKind {
+    pub(crate) fn device(&self) -> DispatchDevice {
+        match self {
+            #[cfg(feature = "cpu")]
+            DispatchTensorKind::Cpu(tensor) => DispatchDevice::Cpu(tensor.device()),
+            #[cfg(feature = "cuda")]
+            DispatchTensorKind::Cuda(tensor) => DispatchDevice::Cuda(tensor.device()),
+            #[cfg(feature = "metal")]
+            DispatchTensorKind::Metal(tensor) => DispatchDevice::Metal(tensor.device()),
+            #[cfg(feature = "rocm")]
+            DispatchTensorKind::Rocm(tensor) => DispatchDevice::Rocm(tensor.device()),
+            #[cfg(feature = "vulkan")]
+            DispatchTensorKind::Vulkan(tensor) => DispatchDevice::Vulkan(tensor.device()),
+            #[cfg(feature = "wgpu")]
+            DispatchTensorKind::Wgpu(tensor) => DispatchDevice::Wgpu(tensor.device()),
+            #[cfg(feature = "webgpu")]
+            DispatchTensorKind::WebGpu(tensor) => DispatchDevice::WebGpu(tensor.device()),
+            #[cfg(any(feature = "flex", default_backend))]
+            DispatchTensorKind::Flex(tensor) => DispatchDevice::Flex(tensor.device()),
+            #[cfg(feature = "ndarray")]
+            DispatchTensorKind::NdArray(tensor) => DispatchDevice::NdArray(tensor.device()),
+            #[cfg(feature = "tch")]
+            DispatchTensorKind::LibTorch(tensor) => DispatchDevice::LibTorch(tensor.device()),
+            #[cfg(feature = "remote-iroh")]
+            DispatchTensorKind::Remote(tensor) => DispatchDevice::Remote(tensor.device()),
+            #[cfg(feature = "autodiff")]
+            DispatchTensorKind::Autodiff(tensor) => DispatchDevice::autodiff(tensor.device()),
+        }
+    }
+}
+
+impl DispatchTensor {
+    pub(crate) fn device(&self) -> DispatchDevice {
+        #[allow(unused_mut)]
+        let mut device = self.kind.device();
+
+        // TODO: should int and bool kinds return an autodiff device?
+        // It would be much easier once there is a single underlying primitive type, which
+        // we can wrap with Autodiff in all cases.
+
+        #[cfg(feature = "autodiff")]
+        if let DispatchDevice::Autodiff(device) = &mut device
+            && let Some(checkpointing) = &self.checkpointing
+        {
+            device.checkpointing = *checkpointing;
+        }
+
+        device
+    }
+}
+
+
 impl Dispatch {
     /// List all available devices of the specified [type id](DispatchDeviceId).
     pub fn enumerate(type_id: DispatchDeviceId) -> Vec<DispatchDevice> {
@@ -790,7 +843,7 @@ impl Dispatch {
             DispatchDeviceId::LibTorch => (0..LibTorch::device_count(0))
                 .map(|i| LibTorchDevice::Cuda(i).into())
                 .collect(),
-            #[cfg(feature = "remote")]
+            #[cfg(feature = "remote-iroh")]
             // Remote devices are keyed by a network address, which the type-id-only
             // `enumerate` can't carry. Use [`Dispatch::enumerate_remote`] to list the devices
             // behind a given address.
@@ -805,6 +858,8 @@ impl Dispatch {
     /// address rather than enumerable local hardware, so they need a dedicated entry point.
     /// Connecting to the server (required to learn its device count) happens here; see
     /// [`RemoteDevice::enumerate`].
+    ///
+    /// Websocket-only: Iroh peers are addressed by endpoint identity, not a URL string.
     #[cfg(feature = "remote")]
     pub fn enumerate_remote(address: &str) -> Vec<DispatchDevice> {
         RemoteDevice::enumerate(address)

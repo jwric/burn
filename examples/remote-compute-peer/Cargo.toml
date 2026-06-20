@@ -1,0 +1,24 @@
+[package]
+authors = ["Jonathan Richard"]
+edition.workspace = true
+license.workspace = true
+name = "remote-compute-peer"
+publish = false
+version.workspace = true
+description = "Native Burn Remote compute peer reachable over Iroh by a shared topic string"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Host the compute peer on a GPU through the wgpu backend instead of the CPU (flex) default.
+wgpu = ["burn/wgpu"]
+
+[dependencies]
+burn = { workspace = true, features = ["server", "remote", "flex"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+iroh = { workspace = true }
+blake3 = "1"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }

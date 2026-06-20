@@ -53,6 +53,7 @@ vision = ["burn-dataset?/vision"]
 audio = ["burn-dataset?/audio"]
 
 # Backends
+remote-iroh = ["burn-tensor/remote-iroh"]
 remote = ["burn-tensor/remote"]
 server = ["burn-tensor/server"]
 cuda = ["burn-tensor/cuda"]

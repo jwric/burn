@@ -47,7 +47,8 @@ webgpu = ["wgpu", "burn-dispatch/webgpu", "cubecl-webgpu"]
 metal = ["wgpu", "burn-dispatch/metal", "cubecl-metal"]
 cpu = ["burn-dispatch/cpu", "cubecl-cpu"]
 autodiff = ["burn-dispatch/autodiff"]
-remote = ["std", "burn-dispatch/remote"]
+remote-iroh = ["std", "burn-dispatch/remote-iroh"]
+remote = ["remote-iroh", "burn-dispatch/remote"]
 server = ["remote", "burn-dispatch/remote-server"]
 
 # For backend extensions
