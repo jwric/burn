@@ -1,0 +1,137 @@
+<!-- This demo is part of Burn project: https://github.com/tracel-ai/burn
+
+    Released under a dual license:
+    https://github.com/tracel-ai/burn/blob/main/LICENSE-MIT
+    https://github.com/tracel-ai/burn/blob/main/LICENSE-APACHE
+-->
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Burn Remote Training (WebAssembly + Iroh)</title>
+
+    <script
+      src="https://cdn.jsdelivr.net/npm/chart.js@4.2.1/dist/chart.umd.min.js"
+      integrity="sha256-tgiW1vJqfIKxE0F2uVvsXbgUlTyrhPMY/sm30hh/Sxc="
+      crossorigin="anonymous"
+    ></script>
+
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/normalize.min.css@8.0.1/normalize.min.css"
+      integrity="sha256-oeib74n7OcB5VoyaI+aGxJKkNEdyxYjd2m3fi/3gKls="
+      crossorigin="anonymous"
+    />
+
+    <style>
+      body {
+        padding: 15px;
+        font-family: sans-serif;
+      }
+      .row {
+        margin-bottom: 10px;
+      }
+      #status {
+        margin-left: 10px;
+        font-family: monospace;
+      }
+      #chart-wrap {
+        width: 720px;
+        max-width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Burn Remote Training</h1>
+    <p>
+      A small MLP is fit to <code>y = sin(3x)</code>. The forward pass, the backward pass and every
+      optimizer update run on the remote compute peer; only the scalar loss is read back.
+    </p>
+
+    <div class="row">
+      Compute peer topic:
+      <input id="topic" value="burn-web" size="24" />
+      learning rate:
+      <input id="lr" value="0.5" size="6" />
+      <button id="connect">Connect</button>
+      <span id="status">not connected</span>
+    </div>
+
+    <div class="row">
+      <button id="train" disabled>Train 300 steps</button>
+      <button id="reset" disabled>Reset</button>
+    </div>
+
+    <div id="chart-wrap">
+      <canvas id="chart"></canvas>
+    </div>
+
+    <script type="module">
+      import { default as wasm, RemoteTrainer } from "./pkg/remote_training_web.js";
+
+      const $ = (id) => document.getElementById(id);
+
+      const chart = new Chart($("chart").getContext("2d"), {
+        type: "line",
+        data: { labels: [], datasets: [{ label: "loss", data: [], borderColor: "#3b82f6", pointRadius: 0 }] },
+        options: {
+          animation: false,
+          scales: { y: { type: "logarithmic", title: { display: true, text: "loss (log)" } },
+                    x: { title: { display: true, text: "step" } } },
+        },
+      });
+
+      let trainer = null;
+      let step = 0;
+
+      function resetChart() {
+        step = 0;
+        chart.data.labels = [];
+        chart.data.datasets[0].data = [];
+        chart.update();
+      }
+
+      await wasm();
+
+      $("connect").onclick = async function () {
+        const topic = $("topic").value.trim();
+        const lr = parseFloat($("lr").value);
+        $("status").textContent = "connecting...";
+        $("connect").disabled = true;
+        try {
+          trainer = await RemoteTrainer.connect(topic, lr);
+          $("status").textContent = "connected";
+          $("train").disabled = false;
+          $("reset").disabled = false;
+          resetChart();
+        } catch (err) {
+          $("status").textContent = "failed: " + err;
+          $("connect").disabled = false;
+        }
+      };
+
+      $("reset").onclick = resetChart;
+
+      $("train").onclick = async function () {
+        if (trainer === null) return;
+        $("train").disabled = true;
+        $("status").textContent = "training...";
+
+        // Run in small batches so the chart updates live without blocking the UI.
+        const total = 300;
+        const batch = 10;
+        for (let done = 0; done < total; done += batch) {
+          const losses = await trainer.train(batch);
+          for (const loss of losses) {
+            chart.data.labels.push(step++);
+            chart.data.datasets[0].data.push(loss);
+          }
+          chart.update();
+        }
+
+        $("status").textContent = "done";
+        $("train").disabled = false;
+      };
+    </script>
+  </body>
+</html>
