@@ -11,7 +11,10 @@ use burn_backend::{
 #[cfg(feature = "websocket")]
 use burn_communication::{CommunicationChannel, Message, ProtocolClient};
 use burn_ir::{OperationIr, TensorId, TensorIr};
-use burn_std::{DType, DeviceSettings, backtrace::BackTrace, id::StreamId};
+use burn_std::{DType, DeviceSettings, id::StreamId};
+// Only the native `sync` path captures a backtrace; the wasm path returns without blocking.
+#[cfg(not(target_family = "wasm"))]
+use burn_std::backtrace::BackTrace;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::oneshot;
 
@@ -677,14 +680,27 @@ impl<C: ProtocolClient> RemoteService<C> {
     }
 
     pub fn sync(&mut self, stream_id: StreamId) -> Result<(), ExecutionError> {
-        let rx = self.submit_request(|id| Task::SyncBackend(id, stream_id));
-        match self.runtime.block_on(rx) {
-            Ok(TaskResponseContent::SyncBackend(res)) => res,
-            Ok(other) => panic!("Invalid response for SyncBackend: {other:?}"),
-            Err(_) => Err(ExecutionError::Generic {
-                reason: "Remote response channel closed before sync completed".into(),
-                backtrace: BackTrace::capture(),
-            }),
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let rx = self.submit_request(|id| Task::SyncBackend(id, stream_id));
+            match self.runtime.block_on(rx) {
+                Ok(TaskResponseContent::SyncBackend(res)) => res,
+                Ok(other) => panic!("Invalid response for SyncBackend: {other:?}"),
+                Err(_) => Err(ExecutionError::Generic {
+                    reason: "Remote response channel closed before sync completed".into(),
+                    backtrace: BackTrace::capture(),
+                }),
+            }
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            // The browser thread cannot block to await completion. Flushing forces every pending
+            // operation onto the wire; the writer's FIFO ordering means anything submitted after
+            // this `sync` still executes after it on the peer, and results are observed through
+            // async reads. There is no host-side barrier to wait on, so we return immediately.
+            let _ = stream_id;
+            self.flush();
+            Ok(())
         }
     }
 
