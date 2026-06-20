@@ -90,9 +90,9 @@ pub mod backends {
     #[cfg(feature = "tch")]
     pub use burn_tch::LibTorch;
 
-    #[cfg(feature = "remote")]
+    #[cfg(feature = "remote-iroh")]
     pub use burn_remote as remote;
-    #[cfg(feature = "remote")]
+    #[cfg(feature = "remote-iroh")]
     pub use burn_remote::RemoteBackend as Remote;
 
     pub use super::devices::*;
@@ -118,9 +118,9 @@ pub mod devices {
     #[cfg(feature = "tch")]
     pub use burn_tch::LibTorchDevice;
 
-    #[cfg(feature = "remote")]
+    #[cfg(feature = "remote-iroh")]
     pub use burn_remote::{RemoteDevice, RemoteNode};
 
-    #[cfg(feature = "remote")]
+    #[cfg(feature = "remote-iroh")]
     pub use burn_remote::BURN_REMOTE_ALPN;
 }

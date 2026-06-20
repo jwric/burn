@@ -114,6 +114,7 @@ apple-amx = ["burn-flex?/apple-amx"]
 
 template = ["burn-wgpu?/template"]
 router = ["burn-router", "ir"]
+remote-iroh = ["burn-core/remote-iroh"]
 remote = ["burn-core/remote"]
 server = ["burn-core/server"]
 

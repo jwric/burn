@@ -18,7 +18,7 @@ workspace = true
 default = ["client", "server", "iroh", "websocket"]
 doc = []
 tracing = [
-    "burn-communication/tracing",
+    "burn-communication?/tracing",
     "burn-ir/tracing",
     "burn-router/tracing",
     "burn-std/tracing",
@@ -26,12 +26,15 @@ tracing = [
 ]
 
 client = ["tokio/sync"]
-server = ["tokio/sync"]
-iroh = ["dep:iroh", "tokio/io-util", "tokio/time"]
+server = ["tokio/sync", "tokio/rt-multi-thread", "tokio/time", "dep:burn-communication"]
+iroh = ["dep:iroh", "tokio/io-util"]
 websocket = [
+    "dep:burn-communication",
     "burn-communication/websocket",
     "burn-communication/data-service",
     "dep:tokio-util",
+    "tokio/rt-multi-thread",
+    "tokio/time",
 ]
 
 
@@ -43,7 +46,9 @@ burn-backend = { workspace = true, features = [
 ] }
 burn-std = { workspace = true, features = ["default"] }
 burn-router = { workspace = true, features = ["default"] }
-burn-communication = { workspace = true }
+# Native transport layer (websocket client/server, tensor data service). The Iroh client does
+# not use it, so it stays optional and out of the wasm build.
+burn-communication = { workspace = true, optional = true }
 
 bytes = { workspace = true }
 
@@ -51,14 +56,20 @@ bytes = { workspace = true }
 log = { workspace = true }
 rand = { workspace = true }
 
-# Shared dependencies
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+# Shared dependencies. `rt`/`macros` come from the workspace default; the heavier
+# `rt-multi-thread`/`time` features are pulled in only by the native transports so the Iroh
+# client stays wasm-compatible (the browser drives Iroh through its own event loop).
+tokio = { workspace = true, features = ["sync", "io-util"] }
 serde = { workspace = true, features = ["derive"] }
 serde_bytes = { workspace = true }
 rmp-serde = { workspace = true }
 iroh = { workspace = true, optional = true }
 
 tokio-util = { workspace = true, optional = true }
+
+# In the browser, spawned Iroh tasks (writer, response demux) run on the JS event loop.
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
+wasm-bindgen-futures = { workspace = true }
 
 [dev-dependencies]
 burn-flex = { workspace = true, features = ["default"] }

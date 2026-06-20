@@ -205,18 +205,36 @@ fn build_runtime() -> tokio::runtime::Runtime {
         .expect("Can build tokio runtime for remote service")
 }
 
+/// Executor that runs a remote session's writer and response-demux tasks.
+///
+/// On native targets this is the Tokio runtime owning the connection (a shared handle for the
+/// Iroh transport, an owned runtime for the legacy websocket). In the browser there is no Tokio
+/// runtime: Iroh runs on the JS event loop, so tasks are spawned with
+/// [`wasm_bindgen_futures::spawn_local`] and blocking calls are unavailable (the synchronous
+/// connect path is replaced by [`RemoteClient::connect_async`](super::RemoteClient)).
 pub(crate) enum ServiceRuntime {
-    #[cfg(feature = "iroh")]
+    #[cfg(all(feature = "iroh", not(target_family = "wasm")))]
     Shared(tokio::runtime::Handle),
     #[cfg(feature = "websocket")]
     Owned(tokio::runtime::Runtime),
+    #[cfg(all(feature = "iroh", target_family = "wasm"))]
+    WasmLocal,
+}
+
+/// Handle to a spawned session task. Joinable on native; a no-op placeholder in the browser,
+/// where detached `spawn_local` tasks simply run to completion on the event loop.
+pub(crate) struct SpawnHandle {
+    #[cfg(not(target_family = "wasm"))]
+    inner: tokio::task::JoinHandle<()>,
 }
 
 impl ServiceRuntime {
     fn for_endpoint(endpoint: &RemoteEndpoint) -> Self {
         match endpoint {
-            #[cfg(feature = "iroh")]
+            #[cfg(all(feature = "iroh", not(target_family = "wasm")))]
             RemoteEndpoint::Iroh { node, .. } => Self::Shared(node.runtime()),
+            #[cfg(all(feature = "iroh", target_family = "wasm"))]
+            RemoteEndpoint::Iroh { .. } => Self::WasmLocal,
             #[cfg(feature = "websocket")]
             RemoteEndpoint::WebSocket { .. } => Self::Owned(build_runtime()),
         }
@@ -224,24 +242,51 @@ impl ServiceRuntime {
 
     pub(crate) fn block_on<F: core::future::Future>(&self, future: F) -> F::Output {
         match self {
-            #[cfg(feature = "iroh")]
+            #[cfg(all(feature = "iroh", not(target_family = "wasm")))]
             Self::Shared(handle) => handle.block_on(future),
             #[cfg(feature = "websocket")]
             Self::Owned(runtime) => runtime.block_on(future),
+            #[cfg(all(feature = "iroh", target_family = "wasm"))]
+            Self::WasmLocal => {
+                core::mem::drop(future);
+                panic!(
+                    "Blocking remote calls are not supported on wasm. Establish the session with \
+                     `RemoteDevice::connect_async(...).await` and read tensors with \
+                     `into_data_async().await`."
+                )
+            }
         }
     }
 
-    pub(crate) fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn spawn<F>(&self, future: F) -> SpawnHandle
     where
-        F: core::future::Future + Send + 'static,
-        F::Output: Send + 'static,
+        F: core::future::Future<Output = ()> + Send + 'static,
     {
-        match self {
+        let inner = match self {
             #[cfg(feature = "iroh")]
             Self::Shared(handle) => handle.spawn(future),
             #[cfg(feature = "websocket")]
             Self::Owned(runtime) => runtime.spawn(future),
-        }
+        };
+        SpawnHandle { inner }
+    }
+
+    /// Spawn a session task on the browser event loop. The Iroh streams these tasks own are not
+    /// `Send`, which is why the wasm path uses `spawn_local` rather than the native `spawn`.
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn spawn<F>(&self, future: F) -> SpawnHandle
+    where
+        F: core::future::Future<Output = ()> + 'static,
+    {
+        wasm_bindgen_futures::spawn_local(future);
+        SpawnHandle {}
+    }
+
+    /// Wait for a spawned task to finish. No-op in the browser.
+    #[cfg(not(target_family = "wasm"))]
+    fn join(&self, handle: SpawnHandle) {
+        let _ = self.block_on(handle.inner);
     }
 }
 
@@ -257,50 +302,56 @@ impl RemoteService {
         (id, endpoint, device_index)
     }
 
-    /// Open the submit and fetch channels. Done synchronously so a missing server surfaces here
+    /// Open the submit and fetch channels. Done up front so a missing server surfaces here
     /// rather than on the first op, and the demux/writer tasks can be spawned on already-open
     /// streams.
+    async fn open_channels(
+        endpoint: &RemoteEndpoint,
+    ) -> Result<(SubmitChannel, ResponseChannel), String> {
+        match endpoint {
+            #[cfg(feature = "iroh")]
+            RemoteEndpoint::Iroh { node, peer, .. } => {
+                let (send, recv) = node
+                    .open_stream(
+                        &PeerAddr::Iroh(peer.clone()),
+                        crate::node::StreamKind::Session,
+                    )
+                    .await?;
+                Ok((SubmitChannel::Iroh(send), ResponseChannel::Iroh(recv)))
+            }
+            #[cfg(feature = "websocket")]
+            RemoteEndpoint::WebSocket { address, .. } => {
+                use burn_communication::websocket::WsClient;
+                let submit = WsClient::connect(address.clone(), "submit")
+                    .await
+                    .map_err(|err| connect_error("submit", &endpoint.peer_addr(), &err))?;
+                let fetch = WsClient::connect(address.clone(), "fetch")
+                    .await
+                    .map_err(|err| connect_error("fetch", &endpoint.peer_addr(), &err))?;
+                Ok((
+                    SubmitChannel::WebSocket(Box::new(submit)),
+                    ResponseChannel::WebSocket(Box::new(fetch)),
+                ))
+            }
+        }
+    }
+
+    /// Native synchronous wrapper over [`open_channels`](Self::open_channels): blocks the
+    /// runner thread until the streams are open.
+    #[cfg(not(target_family = "wasm"))]
     fn connect_streams(
         runtime: &ServiceRuntime,
         endpoint: &RemoteEndpoint,
     ) -> (SubmitChannel, ResponseChannel) {
         runtime
-            .block_on(async {
-                match endpoint {
-                    #[cfg(feature = "iroh")]
-                    RemoteEndpoint::Iroh { node, peer, .. } => {
-                        let (send, recv) = node
-                            .open_stream(
-                                &PeerAddr::Iroh(peer.clone()),
-                                crate::node::StreamKind::Session,
-                            )
-                            .await?;
-                        Ok((SubmitChannel::Iroh(send), ResponseChannel::Iroh(recv)))
-                    }
-                    #[cfg(feature = "websocket")]
-                    RemoteEndpoint::WebSocket { address, .. } => {
-                        use burn_communication::websocket::WsClient;
-                        let submit = WsClient::connect(address.clone(), "submit")
-                            .await
-                            .map_err(|err| connect_error("submit", &endpoint.peer_addr(), &err))?;
-                        let fetch = WsClient::connect(address.clone(), "fetch")
-                            .await
-                            .map_err(|err| connect_error("fetch", &endpoint.peer_addr(), &err))?;
-                        Ok((
-                            SubmitChannel::WebSocket(Box::new(submit)),
-                            ResponseChannel::WebSocket(Box::new(fetch)),
-                        ))
-                    }
-                }
-            })
+            .block_on(Self::open_channels(endpoint))
             .unwrap_or_else(|err: String| panic!("{err}"))
     }
 
     /// Send the session-init handshake on both streams and wait for the device settings the
     /// server replies with on the response stream. Both streams carry the same `Vec<RemoteMessage>`
     /// wire format; the handshake is just a single-element batch.
-    fn handshake(
-        runtime: &ServiceRuntime,
+    async fn handshake_async(
         request: &mut SubmitChannel,
         response: &mut ResponseChannel,
         endpoint: &RemoteEndpoint,
@@ -313,43 +364,63 @@ impl RemoteService {
         .expect("Can serialize RemoteMessage::Init")
         .into();
 
-        runtime
-            .block_on(async {
-                request.send(init_bytes.clone()).await?;
-                if response.requires_init() {
-                    response.send(init_bytes).await?;
-                }
+        let result: Result<(DeviceSettings, u32), String> = async {
+            request.send(init_bytes.clone()).await?;
+            if response.requires_init() {
+                response.send(init_bytes).await?;
+            }
 
-                let msg = response
-                    .recv()
-                    .await?
-                    .expect("Server disconnected during initialization");
-                let reply: TaskResponse = rmp_serde::from_slice(&msg)
-                    .expect("Can deserialize init handshake payload");
+            let msg = response
+                .recv()
+                .await?
+                .expect("Server disconnected during initialization");
+            let reply: TaskResponse =
+                rmp_serde::from_slice(&msg).expect("Can deserialize init handshake payload");
 
-                match reply.content {
-                    TaskResponseContent::Init(SessionInfo {
-                        version,
-                        settings,
-                        device_count,
-                        ..
-                    }) => {
-                        if version != PROTOCOL_VERSION {
-                            panic!(
-                                "Server uses Burn Remote protocol version {version}, expected {PROTOCOL_VERSION}"
-                            );
-                        }
-                        Ok::<_, String>((settings, device_count))
+            match reply.content {
+                TaskResponseContent::Init(SessionInfo {
+                    version,
+                    settings,
+                    device_count,
+                    ..
+                }) => {
+                    if version != PROTOCOL_VERSION {
+                        panic!(
+                            "Server uses Burn Remote protocol version {version}, expected {PROTOCOL_VERSION}"
+                        );
                     }
-                    other => panic!("Expected Init response, got {other:?}"),
+                    Ok((settings, device_count))
                 }
-            })
-            .unwrap_or_else(|err| {
-                panic!(
-                    "Failed to initialize remote session at {}: {err}",
-                    endpoint.peer_addr()
-                )
-            })
+                other => panic!("Expected Init response, got {other:?}"),
+            }
+        }
+        .await;
+
+        result.unwrap_or_else(|err| {
+            panic!(
+                "Failed to initialize remote session at {}: {err}",
+                endpoint.peer_addr()
+            )
+        })
+    }
+
+    /// Native synchronous wrapper over [`handshake_async`](Self::handshake_async).
+    #[cfg(not(target_family = "wasm"))]
+    fn handshake(
+        runtime: &ServiceRuntime,
+        request: &mut SubmitChannel,
+        response: &mut ResponseChannel,
+        endpoint: &RemoteEndpoint,
+        session_id: SessionId,
+        device_index: u32,
+    ) -> (DeviceSettings, u32) {
+        runtime.block_on(Self::handshake_async(
+            request,
+            response,
+            endpoint,
+            session_id,
+            device_index,
+        ))
     }
 
     /// Spawn the response-demux task: route each [`TaskResponse`] to its pending callback by
@@ -360,7 +431,8 @@ impl RemoteService {
         mut response: ResponseChannel,
         responder: Responder,
     ) {
-        runtime.spawn(async move {
+        // Detached: the task owns the response stream and runs until it closes.
+        let _demux = runtime.spawn(async move {
             loop {
                 match response.recv().await {
                     Ok(Some(msg)) => {
@@ -391,6 +463,55 @@ impl RemoteService {
             // gate new ones so they error out instead of blocking forever on a dead server.
             responder.disconnect();
         });
+    }
+}
+
+/// Session state captured from a [`RemoteService`] to drive an asynchronous (wasm) connect.
+#[cfg(target_family = "wasm")]
+pub(crate) struct WasmConnectPlan {
+    endpoint: RemoteEndpoint,
+    session_id: SessionId,
+    device_index: u32,
+    responder: Responder,
+}
+
+/// A session opened by [`wasm_connect`], ready to be installed back into the service.
+#[cfg(target_family = "wasm")]
+pub(crate) struct WasmConnected {
+    writer: SubmitWriter,
+    settings: DeviceSettings,
+    device_count: u32,
+}
+
+/// Open and hand-shake a session on the browser event loop.
+///
+/// This is the async counterpart of [`RemoteService::ensure_connected`]: it runs the parts that
+/// would block (connecting the Iroh streams, the init round-trip) with `.await`, then spawns the
+/// response-demux and writer tasks with `spawn_local`. The returned [`WasmConnected`] is `Send`,
+/// so the caller can install it back into the service through the device handle.
+#[cfg(target_family = "wasm")]
+pub(crate) async fn wasm_connect(plan: WasmConnectPlan) -> WasmConnected {
+    let runtime = ServiceRuntime::WasmLocal;
+
+    let (mut request, mut response) = RemoteService::open_channels(&plan.endpoint)
+        .await
+        .unwrap_or_else(|err| panic!("{err}"));
+    let (settings, device_count) = RemoteService::handshake_async(
+        &mut request,
+        &mut response,
+        &plan.endpoint,
+        plan.session_id,
+        plan.device_index,
+    )
+    .await;
+
+    RemoteService::spawn_response_demux(&runtime, response, plan.responder);
+    let writer = SubmitWriter::spawn(&runtime, request);
+
+    WasmConnected {
+        writer,
+        settings,
+        device_count,
     }
 }
 
@@ -581,27 +702,68 @@ impl RemoteService {
             return;
         }
 
-        log::debug!(
-            "Connecting to {} (device {}) ...",
-            self.endpoint.peer_addr(),
-            self.device_index
-        );
-        let (mut request, mut response) = Self::connect_streams(&self.runtime, &self.endpoint);
-        let (settings, device_count) = Self::handshake(
-            &self.runtime,
-            &mut request,
-            &mut response,
-            &self.endpoint,
-            self.session_id,
-            self.device_index,
-        );
+        #[cfg(not(target_family = "wasm"))]
+        {
+            log::debug!(
+                "Connecting to {} (device {}) ...",
+                self.endpoint.peer_addr(),
+                self.device_index
+            );
+            let (mut request, mut response) = Self::connect_streams(&self.runtime, &self.endpoint);
+            let (settings, device_count) = Self::handshake(
+                &self.runtime,
+                &mut request,
+                &mut response,
+                &self.endpoint,
+                self.session_id,
+                self.device_index,
+            );
 
-        // Publish to the shared cells so `RemoteDevice::defaults`/`enumerate` can read them.
-        let _ = self.settings.set(settings);
-        let _ = self.device_count.set(device_count);
+            // Publish to the shared cells so `RemoteDevice::defaults`/`enumerate` can read them.
+            let _ = self.settings.set(settings);
+            let _ = self.device_count.set(device_count);
 
-        Self::spawn_response_demux(&self.runtime, response, self.pending.responder());
-        self.writer = Some(SubmitWriter::spawn(&self.runtime, request));
+            Self::spawn_response_demux(&self.runtime, response, self.pending.responder());
+            self.writer = Some(SubmitWriter::spawn(&self.runtime, request));
+        }
+
+        #[cfg(target_family = "wasm")]
+        panic!(
+            "Remote session to {} is not connected. On wasm, establish it with \
+             `RemoteDevice::connect_async(...).await` before running tensor operations.",
+            self.endpoint.peer_addr()
+        );
+    }
+
+    /// Capture everything needed to open the session asynchronously, or `None` if it is already
+    /// connected. The browser cannot block the runner thread, so the connect + handshake runs
+    /// off the device handle (see [`wasm_connect`]) and the result is handed back through
+    /// [`wasm_install`](Self::wasm_install). Every captured value is `Send`, so it can cross the
+    /// device handle even though the Iroh streams it later owns are not.
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn wasm_connect_plan(&mut self) -> Option<WasmConnectPlan> {
+        if self.writer.is_some() {
+            return None;
+        }
+        Some(WasmConnectPlan {
+            endpoint: self.endpoint.clone(),
+            session_id: self.session_id,
+            device_index: self.device_index,
+            responder: self.pending.responder(),
+        })
+    }
+
+    /// Install a connection opened by [`wasm_connect`] and publish its handshake results.
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn wasm_install(&mut self, connected: WasmConnected) {
+        if self.writer.is_some() {
+            // A concurrent connect already installed a session; drop this one rather than
+            // leaking two writers for the same device.
+            return;
+        }
+        let _ = self.settings.set(connected.settings);
+        let _ = self.device_count.set(connected.device_count);
+        self.writer = Some(connected.writer);
     }
 
     /// Hand whatever's currently buffered to the writer task as one batch (the writer

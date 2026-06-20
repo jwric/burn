@@ -207,6 +207,15 @@ impl RemoteDevice {
         get_client::<RemoteChannel>(self).ensure_connected();
     }
 
+    /// Establish the session for this device asynchronously, populating its settings and
+    /// device-count cells. This is the browser entry point: a wasm target cannot block to connect
+    /// on first use, so call this (and `.await` it) once before running any operation on the
+    /// device. Idempotent — a no-op once the session is up.
+    #[cfg(target_family = "wasm")]
+    pub async fn connect_async(&self) {
+        get_client::<RemoteChannel>(self).connect_async().await;
+    }
+
     /// Initializes the client for this device using the specified protocol channel.
     /// This is a no-op if the client already exists for this address.
     ///

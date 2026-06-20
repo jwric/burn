@@ -31,6 +31,31 @@ impl RemoteClient {
             .submit_blocking(|s| s.ensure_connected())
             .expect("Service call failed");
     }
+
+    /// Establish the session asynchronously, the way the browser requires.
+    ///
+    /// The connect + handshake cannot block the single browser thread, so it runs off the device
+    /// handle: the service hands back the connection parameters, the network round-trip happens
+    /// with `.await`, and the opened session is installed back into the service. A no-op once the
+    /// session is up.
+    #[cfg(target_family = "wasm")]
+    pub(crate) async fn connect_async(&self) {
+        use crate::client::service::wasm_connect;
+
+        let Some(plan) = self
+            .handle
+            .submit_blocking(|s| s.wasm_connect_plan())
+            .expect("Service call failed")
+        else {
+            return;
+        };
+
+        let connected = wasm_connect(plan).await;
+
+        self.handle
+            .submit_blocking(move |s| s.wasm_install(connected))
+            .expect("Service call failed");
+    }
 }
 
 impl Clone for RemoteClient {

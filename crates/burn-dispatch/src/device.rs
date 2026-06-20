@@ -63,7 +63,7 @@ pub enum DispatchDevice {
     LibTorch(LibTorchDevice),
 
     /// The [remote backend](Remote) device, identified by a network address.
-    #[cfg(feature = "remote")]
+    #[cfg(feature = "remote-iroh")]
     Remote(RemoteDevice),
 
     /// The [autodiff enabled backend](Autodiff) device.
@@ -162,7 +162,7 @@ impl core::fmt::Debug for DispatchDevice {
             Self::NdArray(device) => f.debug_tuple("NdArray").field(device).finish(),
             #[cfg(feature = "tch")]
             Self::LibTorch(device) => f.debug_tuple("LibTorch").field(device).finish(),
-            #[cfg(feature = "remote")]
+            #[cfg(feature = "remote-iroh")]
             Self::Remote(device) => f.debug_tuple("Remote").field(device).finish(),
             #[cfg(feature = "autodiff")]
             // Format without `AutodiffDevice` wrapper
@@ -237,7 +237,7 @@ impl Default for DispatchDevice {
                         panic!("BURN_DEVICE=tch requested, but the 'tch' feature is not enabled.");
                     }
                     "remote" => {
-                        #[cfg(feature = "remote")]
+                        #[cfg(feature = "remote-iroh")]
                         return Self::Remote(RemoteDevice::default());
                         panic!(
                             "BURN_DEVICE=remote requested, but the 'remote' feature is not enabled."
@@ -291,7 +291,7 @@ impl Default for DispatchDevice {
         #[cfg(any(feature = "flex", default_backend))]
         return Self::Flex(FlexDevice);
 
-        #[cfg(feature = "remote")]
+        #[cfg(feature = "remote-iroh")]
         return Self::Remote(RemoteDevice::default());
 
         #[cfg(feature = "ndarray")]
@@ -334,7 +334,7 @@ impl PartialEq for DispatchDevice {
             (Self::NdArray(a), Self::NdArray(b)) => a == b,
             #[cfg(feature = "tch")]
             (Self::LibTorch(a), Self::LibTorch(b)) => a == b,
-            #[cfg(feature = "remote")]
+            #[cfg(feature = "remote-iroh")]
             (Self::Remote(a), Self::Remote(b)) => a == b,
             #[allow(unreachable_patterns)]
             (_, _) => false,
@@ -394,7 +394,7 @@ impl DispatchDevice {
             Self::NdArray(_) => DispatchDeviceId::NdArray,
             #[cfg(feature = "tch")]
             Self::LibTorch(_) => DispatchDeviceId::LibTorch,
-            #[cfg(feature = "remote")]
+            #[cfg(feature = "remote-iroh")]
             Self::Remote(_) => DispatchDeviceId::Remote,
             #[cfg(feature = "autodiff")]
             Self::Autodiff(device) => device.inner.backend_id(),
@@ -469,7 +469,7 @@ impl TryFrom<u16> for DispatchDeviceId {
             8 => Ok(Self::Vulkan),
             #[cfg(feature = "webgpu")]
             9 => Ok(Self::WebGpu),
-            #[cfg(feature = "remote")]
+            #[cfg(feature = "remote-iroh")]
             10 => Ok(Self::Remote),
             _ => Err(()),
         }
@@ -499,7 +499,7 @@ impl DeviceOps for DispatchDevice {
             Self::NdArray(device) => device.defaults(),
             #[cfg(feature = "tch")]
             Self::LibTorch(device) => device.defaults(),
-            #[cfg(feature = "remote")]
+            #[cfg(feature = "remote-iroh")]
             Self::Remote(device) => device.defaults(),
             #[cfg(feature = "autodiff")]
             Self::Autodiff(device) => device.inner.defaults(),
@@ -533,7 +533,7 @@ impl burn_backend::Device for DispatchDevice {
             DispatchDeviceId::NdArray => Self::NdArray(NdArrayDevice::from_id(device_id)),
             #[cfg(feature = "tch")]
             DispatchDeviceId::LibTorch => Self::LibTorch(LibTorchDevice::from_id(device_id)),
-            #[cfg(feature = "remote")]
+            #[cfg(feature = "remote-iroh")]
             DispatchDeviceId::Remote => Self::Remote(RemoteDevice::from_id(device_id)),
             _ => unreachable!("No backend feature enabled."),
         }
@@ -561,7 +561,7 @@ impl burn_backend::Device for DispatchDevice {
             Self::NdArray(device) => device.to_id(),
             #[cfg(feature = "tch")]
             Self::LibTorch(device) => device.to_id(),
-            #[cfg(feature = "remote")]
+            #[cfg(feature = "remote-iroh")]
             Self::Remote(device) => device.to_id(),
             #[cfg(feature = "autodiff")]
             Self::Autodiff(device) => device.inner.to_id(),
@@ -646,7 +646,7 @@ impl From<LibTorchDevice> for DispatchDevice {
     }
 }
 
-#[cfg(feature = "remote")]
+#[cfg(feature = "remote-iroh")]
 impl From<RemoteDevice> for DispatchDevice {
     fn from(device: RemoteDevice) -> Self {
         DispatchDevice::Remote(device)
