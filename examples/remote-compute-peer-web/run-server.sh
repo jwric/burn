@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+# Browsers block module scripts loaded over file://, so serve the directory over HTTP.
+if ! command -v python3 &> /dev/null; then
+    echo "python3 could not be found. Running server requires python3."
+    exit 1
+fi
+
+echo "Running local python HTTP server on port 8000 ..."
+python3 -m http.server 8000

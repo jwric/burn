@@ -8831,6 +8831,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "remote-compute-peer-web"
+version = "0.22.0-pre.1"
+dependencies = [
+ "blake3",
+ "burn-flex",
+ "burn-remote",
+ "console_error_panic_hook",
+ "iroh",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "remote-inference-web"
 version = "0.22.0-pre.1"
 dependencies = [
