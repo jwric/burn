@@ -8,8 +8,11 @@
 
 use burn::tensor::Tensor;
 
-/// Largest matrix slice rendered; larger tensors are truncated with an ellipsis.
+/// Largest matrix slice rendered as a table; larger tensors are truncated with an ellipsis.
 const MAX_SHOWN: usize = 16;
+
+/// Largest matrix slice rendered as a heatmap; larger tensors are cropped to this many rows/cols.
+const MAX_HEATMAP: usize = 128;
 
 /// A 2-D tensor wrapped for rich notebook display.
 pub struct Show(pub Tensor<2>);
@@ -38,6 +41,36 @@ impl Show {
         let values: Vec<f32> = self.0.clone().into_data().to_vec().unwrap();
         let html = render_html(&values, rows, cols);
         format!("EVCXR_BEGIN_CONTENT text/html\n{html}\nEVCXR_END_CONTENT")
+    }
+}
+
+/// A 2-D tensor wrapped for display as a heatmap image, for tensors too large to read as numbers.
+pub struct Heatmap(pub Tensor<2>);
+
+/// Convenience for turning a tensor into a [`Heatmap`] in a cell's final expression.
+pub trait HeatmapExt {
+    /// Wrap `self` so a notebook cell renders it as a heatmap image.
+    fn heatmap(self) -> Heatmap;
+}
+
+impl HeatmapExt for Tensor<2> {
+    fn heatmap(self) -> Heatmap {
+        Heatmap(self)
+    }
+}
+
+impl Heatmap {
+    /// Called by evcxr to render the final expression of a cell.
+    pub fn evcxr_display(&self) {
+        println!("{}", self.bundle());
+    }
+
+    /// The MIME bundle evcxr reads from stdout: the SVG image delimited by evcxr's markers.
+    fn bundle(&self) -> String {
+        let [rows, cols] = self.0.dims();
+        let values: Vec<f32> = self.0.clone().into_data().to_vec().unwrap();
+        let svg = render_svg(&values, rows, cols);
+        format!("EVCXR_BEGIN_CONTENT image/svg+xml\n{svg}\nEVCXR_END_CONTENT")
     }
 }
 
@@ -92,6 +125,36 @@ pub fn render_html(values: &[f32], rows: usize, cols: usize) -> String {
     html
 }
 
+/// Render a matrix as an SVG heatmap: one colored cell per element, no text, cropped to
+/// [`MAX_HEATMAP`] rows/columns. Cell size adapts so the image stays around 512px on its long edge.
+/// Pure function so it can be unit-tested without a backend.
+pub fn render_svg(values: &[f32], rows: usize, cols: usize) -> String {
+    let shown_rows = rows.min(MAX_HEATMAP);
+    let shown_cols = cols.min(MAX_HEATMAP);
+    let (min, max) = min_max(values);
+
+    let longest = shown_rows.max(shown_cols).max(1);
+    let cell = (512 / longest).clamp(2, 24);
+    let width = shown_cols * cell;
+    let height = shown_rows * cell;
+
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" \
+         shape-rendering=\"crispEdges\">"
+    );
+    for r in 0..shown_rows {
+        for c in 0..shown_cols {
+            let color = heat_color(values[r * cols + c], min, max);
+            let (x, y) = (c * cell, r * cell);
+            svg.push_str(&format!(
+                "<rect x=\"{x}\" y=\"{y}\" width=\"{cell}\" height=\"{cell}\" fill=\"{color}\"/>"
+            ));
+        }
+    }
+    svg.push_str("</svg>");
+    svg
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +195,35 @@ mod tests {
         assert!(bundle.starts_with("EVCXR_BEGIN_CONTENT text/html\n"));
         assert!(bundle.trim_end().ends_with("EVCXR_END_CONTENT"));
         assert!(bundle.contains("[2x2]"));
+    }
+
+    #[test]
+    fn svg_has_one_rect_per_cell() {
+        let svg = render_svg(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0], 2, 3);
+        assert!(svg.starts_with("<svg"));
+        assert_eq!(svg.matches("<rect").count(), 6);
+        assert!(svg.contains("</svg>"));
+    }
+
+    #[test]
+    fn svg_crops_large_matrices() {
+        let rows = MAX_HEATMAP + 10;
+        let cols = MAX_HEATMAP + 10;
+        let values = vec![0.0_f32; rows * cols];
+        let svg = render_svg(&values, rows, cols);
+        assert_eq!(svg.matches("<rect").count(), MAX_HEATMAP * MAX_HEATMAP);
+    }
+
+    #[test]
+    fn heatmap_bundle_uses_svg_mime() {
+        use burn::tensor::{Device, Tensor};
+
+        let device = Device::default();
+        let tensor = Tensor::<2>::from_floats([[1.0, 2.0], [3.0, 4.0]], &device);
+        let bundle = Heatmap(tensor).bundle();
+
+        assert!(bundle.starts_with("EVCXR_BEGIN_CONTENT image/svg+xml\n"));
+        assert!(bundle.trim_end().ends_with("EVCXR_END_CONTENT"));
+        assert!(bundle.contains("<svg"));
     }
 }
