@@ -1,0 +1,126 @@
+<!-- This demo is part of Burn project: https://github.com/tracel-ai/burn
+
+    Released under a dual license:
+    https://github.com/tracel-ai/burn/blob/main/LICENSE-MIT
+    https://github.com/tracel-ai/burn/blob/main/LICENSE-APACHE
+-->
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Burn Remote Tensor Playground (WebAssembly + Iroh)</title>
+
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/normalize.min.css@8.0.1/normalize.min.css"
+      integrity="sha256-oeib74n7OcB5VoyaI+aGxJKkNEdyxYjd2m3fi/3gKls="
+      crossorigin="anonymous"
+    />
+
+    <style>
+      body {
+        padding: 15px;
+        font-family: sans-serif;
+      }
+      .row {
+        margin-bottom: 10px;
+      }
+      #status {
+        margin-left: 10px;
+        font-family: monospace;
+      }
+      #log {
+        font-family: monospace;
+        white-space: pre;
+        background: #0b1021;
+        color: #e6e6e6;
+        padding: 12px;
+        height: 360px;
+        overflow-y: auto;
+        border-radius: 6px;
+      }
+      #line {
+        font-family: monospace;
+        width: 540px;
+        max-width: 100%;
+      }
+      .hint {
+        color: #555;
+        font-size: 0.9em;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Burn Remote Tensor Playground</h1>
+    <p>
+      Type tensor expressions; they are evaluated on the remote compute peer and the result is read
+      back. Variables persist across lines.
+    </p>
+    <p class="hint">
+      Examples: <code>a = randn(3, 4)</code>, <code>b = ones(4, 2)</code>, <code>a @ b</code>,
+      <code>relu(a) + 1</code>, <code>mean(a * a)</code>, <code>t(a)</code>.
+    </p>
+
+    <div class="row">
+      Compute peer topic:
+      <input id="topic" value="burn-web" size="24" />
+      <button id="connect">Connect</button>
+      <span id="status">not connected</span>
+    </div>
+
+    <div id="log"></div>
+
+    <div class="row" style="margin-top: 10px">
+      <input id="line" placeholder="enter an expression and press Enter" disabled />
+    </div>
+
+    <script type="module">
+      import { default as wasm, Session } from "./pkg/remote_playground_web.js";
+
+      const $ = (id) => document.getElementById(id);
+      const log = $("log");
+
+      function print(text, cls) {
+        const span = document.createElement("span");
+        span.textContent = text + "\n";
+        if (cls) span.style.color = cls;
+        log.appendChild(span);
+        log.scrollTop = log.scrollHeight;
+      }
+
+      let session = null;
+
+      await wasm();
+
+      $("connect").onclick = async function () {
+        const topic = $("topic").value.trim();
+        $("status").textContent = "connecting...";
+        $("connect").disabled = true;
+        try {
+          session = await Session.connect(topic);
+          $("status").textContent = "connected";
+          $("line").disabled = false;
+          $("line").focus();
+          print("connected to '" + topic + "'", "#6ee7b7");
+        } catch (err) {
+          $("status").textContent = "failed: " + err;
+          $("connect").disabled = false;
+        }
+      };
+
+      $("line").addEventListener("keydown", async function (event) {
+        if (event.key !== "Enter" || session === null) return;
+        const line = $("line").value;
+        if (line.trim() === "") return;
+        $("line").value = "";
+        print("> " + line);
+        try {
+          const result = await session.run(line);
+          print(result);
+        } catch (err) {
+          print("error: " + err, "#fca5a5");
+        }
+      });
+    </script>
+  </body>
+</html>

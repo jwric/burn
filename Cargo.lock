@@ -8836,6 +8836,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "remote-playground-web"
+version = "0.22.0-pre.1"
+dependencies = [
+ "blake3",
+ "burn",
+ "console_error_panic_hook",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "remote-training-web"
 version = "0.22.0-pre.1"
 dependencies = [
