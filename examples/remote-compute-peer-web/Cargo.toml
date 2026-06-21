@@ -1,0 +1,28 @@
+[package]
+authors = ["Jonathan Richard"]
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+name = "remote-compute-peer-web"
+publish = false
+version.workspace = true
+description = "Run a Burn compute peer in the browser, serving tensor operations on WebGPU over Iroh"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+burn-remote = { workspace = true, features = ["server", "iroh"] }
+# The browser peer serves on the Flex CPU backend, which compiles for wasm today. The intended
+# WebGPU backend (`burn-wgpu`, `features = ["webgpu"]`) is a one-line swap once the upstream
+# `cubecl-runtime` wasm build is fixed; see the README.
+burn-flex = { workspace = true, features = ["default"] }
+iroh = { workspace = true }
+blake3 = { version = "1", default-features = false }
+console_error_panic_hook = { workspace = true }
+
+# Wasm dependencies
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }

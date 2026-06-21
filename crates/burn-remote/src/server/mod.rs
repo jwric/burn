@@ -14,6 +14,8 @@ mod iroh;
 #[cfg(feature = "websocket")]
 pub use base::{start_websocket, start_websocket_async};
 #[cfg(feature = "iroh")]
+pub use ::iroh::protocol::Router;
+#[cfg(feature = "iroh")]
 pub use iroh::{AuthorizationRequest, IrohRemoteProtocol, PeerAuthorizer};
 // The blocking process entry points exist only on native targets; the browser server is driven by
 // the JS event loop and composed through `RemoteNode::serve` / `protocol` directly.

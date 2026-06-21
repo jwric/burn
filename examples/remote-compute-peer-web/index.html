@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Burn — browser compute peer</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 40rem;
+            margin: 3rem auto;
+            padding: 0 1rem;
+            line-height: 1.5;
+        }
+
+        input,
+        button {
+            font-size: 1rem;
+            padding: 0.4rem 0.6rem;
+        }
+
+        #status {
+            margin-top: 1rem;
+            padding: 0.75rem;
+            background: #f2f4f7;
+            border-radius: 0.4rem;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Browser compute peer</h1>
+    <p>
+        This tab becomes a Burn compute peer: it brings up a WebGPU device and serves tensor
+        operations submitted by remote clients over Iroh. Pick a topic, then point a client (for
+        example the <code>remote-playground-web</code> example) at the same topic.
+    </p>
+
+    <label for="topic">Topic</label>
+    <input id="topic" type="text" value="burn-web" />
+    <button id="serve">Start serving</button>
+
+    <div id="status">Idle.</div>
+
+    <script type="module">
+        import init, { ComputePeer } from "./pkg/remote_compute_peer_web.js";
+
+        const status = document.getElementById("status");
+
+        async function main() {
+            await init();
+
+            document.getElementById("serve").addEventListener("click", async () => {
+                const topic = document.getElementById("topic").value.trim() || "burn-web";
+                status.textContent = `Bringing up WebGPU and serving topic "${topic}"…`;
+                try {
+                    const peer = await ComputePeer.start(topic);
+                    window._peer = peer; // keep it alive for the lifetime of the page
+                    status.textContent =
+                        `Serving topic "${topic}".\nEndpoint id: ${peer.endpoint_id()}`;
+                } catch (err) {
+                    status.textContent = `Failed to start: ${err}`;
+                }
+            });
+        }
+
+        main();
+    </script>
+</body>
+
+</html>
