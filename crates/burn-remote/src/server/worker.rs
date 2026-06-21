@@ -28,11 +28,9 @@
 //! shared runtime, so a barrier (or rendezvous) on one session can't stall another session's
 //! worker or a runtime thread.
 //!
-//! In the browser there are no threads: the worker runs on the JS event loop via `spawn_local`.
-//! Ordinary compute (op registration, tensor reads, cross-peer transfers) is unaffected, but the
-//! synchronously-blocking tasks above would stall the single event-loop thread, so a browser
-//! compute peer cannot host co-located collective or same-host-transfer participants. It serves
-//! independent sessions, which is the intended browser-peer use.
+//! In the browser the worker instead runs on the JS event loop via `spawn_local`, so a browser peer
+//! cannot host co-located collective / same-host-transfer participants (the single thread would
+//! stall on the blocking tasks above). Ordinary compute is unaffected.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -92,12 +90,8 @@ where
     B: BackendIr,
     T: TensorTransfer<B>,
 {
-    /// Create a session's handler, start its worker, and return the inbound task sender the submit
-    /// handler forwards to.
-    ///
-    /// The returned [`mpsc::Sender`] is cloned once per submit connection. The worker runs until
-    /// every clone is dropped — clean session close or submit-stream disconnect — at which point it
-    /// flushes the runner and exits, so there is nothing to join.
+    /// Start the session worker; the worker runs until every clone of the returned sender is
+    /// dropped, then flushes and exits.
     pub(crate) fn spawn(
         session_id: SessionId,
         runner: TensorInterpreter<B>,
@@ -119,11 +113,7 @@ where
         sender
     }
 
-    /// Start the worker on its own OS thread, driving [`run`](Self::run) with `block_on` on the
-    /// runtime that owns the endpoint. The dedicated thread keeps synchronously-blocking tasks
-    /// (collective barriers, same-host rendezvous) off the shared runtime — see the module docs.
-    ///
-    /// Must be called from within that runtime: it captures [`Handle::current`].
+    // Must be called from within the runtime that owns the endpoint: it captures `Handle::current`.
     #[cfg(not(target_family = "wasm"))]
     fn drive(self, receiver: mpsc::Receiver<Task>) {
         let handle = Handle::current();
@@ -134,9 +124,6 @@ where
             .expect("Failed to spawn session worker thread");
     }
 
-    /// Start the worker on the browser event loop. There is a single thread here, so a
-    /// synchronously-blocking task would stall every session; the module docs spell out the
-    /// resulting limitation.
     #[cfg(target_family = "wasm")]
     fn drive(self, receiver: mpsc::Receiver<Task>) {
         spawn_detached(self.run(receiver));

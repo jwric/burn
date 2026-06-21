@@ -140,11 +140,7 @@ pub async fn start_websocket_async(device: DispatchDevice, port: u16) {
     })
 }
 
-/// Build a running Iroh compute server and return its router, without blocking.
-///
-/// Unlike [`start_iroh_async`], the accept loop runs on the ambient executor (a tokio runtime on
-/// native, the JS event loop in the browser), so this returns immediately. It is the entry a
-/// browser compute peer uses; drop or `shutdown` the returned router to stop serving.
+/// Non-blocking counterpart of [`start_iroh_async`]: returns the running router immediately.
 pub fn serve_iroh(
     device: DispatchDevice,
     node: burn_remote::RemoteNode,

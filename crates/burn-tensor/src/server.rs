@@ -9,8 +9,6 @@
 //! use burn::{Device, server::{serve, RemoteNode}};
 //!
 //! let node = RemoteNode::bind().await?;
-//! // Returns immediately; the server runs on the ambient executor (a tokio runtime natively, the
-//! // event loop in the browser). Keep the router alive for as long as you want to serve.
 //! let _router = serve(Device::default(), node);
 //! ```
 //!
@@ -18,8 +16,7 @@
 //! helpers and the WebSocket transport are native-only.
 //!
 //! User-defined backends that implement `BackendIr` but aren't part of
-//! `DispatchDevice` should call `burn_remote::server::serve` (or `start_iroh_async`) directly with
-//! the concrete backend type parameter.
+//! `DispatchDevice` should call `burn_remote::server::serve` directly with the concrete backend.
 
 use crate::Device;
 pub use burn_dispatch::backends::remote::RemoteNode;
@@ -43,13 +40,10 @@ pub enum Channel {
     },
 }
 
-/// Start a remote-execution server and return its running router, without blocking.
+/// Start a non-blocking Iroh server and return its [`Router`]; drop it to stop serving.
 ///
-/// Unlike [`start_async`], this returns immediately with the running server; its accept loop runs
-/// on the ambient executor (a tokio runtime on native, the event loop in the browser), which is why
-/// it also works in wasm. Drop the returned [`Router`] to stop serving. Iroh transport only.
-///
-/// See [`start`] for backend-selection rules.
+/// The accept loop runs on the ambient executor (a tokio runtime on native, the event loop in the
+/// browser), so unlike [`start_async`] this also works in wasm. See [`start`] for backend selection.
 pub fn serve(device: Device, node: RemoteNode) -> Router {
     burn_dispatch::remote_server::serve_iroh(device.into_dispatch(), node)
 }
