@@ -36,6 +36,12 @@ struct RemoteNodeInner {
     // In the browser those tasks run on the JS event loop, so no handle is stored.
     #[cfg(all(feature = "client", not(target_family = "wasm")))]
     runtime: tokio::runtime::Handle,
+    // Keeps a node-owned runtime alive for the node's lifetime, so synchronous callers (scripts,
+    // REPLs, notebooks via `bind_blocking`) don't need an ambient runtime. `None` when the node
+    // runs on a caller-owned runtime. Held only as a drop guard; the handle above is what is used.
+    #[cfg(all(feature = "client", not(target_family = "wasm")))]
+    #[allow(dead_code)]
+    owned_runtime: Option<Arc<tokio::runtime::Runtime>>,
     connections: Mutex<HashMap<EndpointId, Arc<OnceCell<Connection>>>>,
 }
 
@@ -66,6 +72,37 @@ impl RemoteNode {
         Ok(Self::from_endpoint(endpoint))
     }
 
+    /// Bind a node synchronously, on a runtime the node owns.
+    ///
+    /// Unlike [`bind`](Self::bind), this does not require an ambient Tokio runtime or `async`: it
+    /// builds a multi-threaded runtime, binds the endpoint on it, and keeps it alive for the node's
+    /// lifetime. Intended for synchronous scripts, REPLs, and Rust notebooks (evcxr/Jupyter), where
+    /// the surrounding code is not already running on a runtime.
+    #[cfg(all(feature = "client", not(target_family = "wasm")))]
+    pub fn bind_blocking() -> Result<Self, iroh::endpoint::BindError> {
+        let runtime = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("Can build a Tokio runtime for the Burn Remote node"),
+        );
+        let handle = runtime.handle().clone();
+        let endpoint = handle.block_on(async {
+            Endpoint::builder(presets::N0)
+                .alpns(vec![BURN_REMOTE_ALPN.to_vec()])
+                .bind()
+                .await
+        })?;
+        Ok(Self {
+            inner: Arc::new(RemoteNodeInner {
+                endpoint,
+                runtime: handle,
+                owned_runtime: Some(runtime),
+                connections: Mutex::new(HashMap::new()),
+            }),
+        })
+    }
+
     /// Use an application-configured Iroh endpoint.
     ///
     /// Applications serving Burn Remote must include [`BURN_REMOTE_ALPN`] in the endpoint's
@@ -82,6 +119,8 @@ impl RemoteNode {
                 endpoint,
                 #[cfg(all(feature = "client", not(target_family = "wasm")))]
                 runtime,
+                #[cfg(all(feature = "client", not(target_family = "wasm")))]
+                owned_runtime: None,
                 connections: Mutex::new(HashMap::new()),
             }),
         }
@@ -94,6 +133,7 @@ impl RemoteNode {
             inner: Arc::new(RemoteNodeInner {
                 endpoint,
                 runtime,
+                owned_runtime: None,
                 connections: Mutex::new(HashMap::new()),
             }),
         }
