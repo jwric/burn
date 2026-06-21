@@ -27,6 +27,12 @@
 //! barrier and it deadlocks. Giving each session its own OS thread keeps that blocking off the
 //! shared runtime, so a barrier (or rendezvous) on one session can't stall another session's
 //! worker or a runtime thread.
+//!
+//! In the browser there are no threads: the worker runs on the JS event loop via `spawn_local`.
+//! Ordinary compute (op registration, tensor reads, cross-peer transfers) is unaffected, but the
+//! synchronously-blocking tasks above would stall the single event-loop thread, so a browser
+//! compute peer cannot host co-located collective or same-host-transfer participants. It serves
+//! independent sessions, which is the intended browser-peer use.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -34,10 +40,13 @@ use std::sync::{Arc, Mutex};
 use burn_communication::{Protocol, external_comm::ExternalCommService};
 use burn_ir::{BackendIr, GraphId};
 use burn_router::{Graph, TensorInterpreter};
-use tokio::{runtime::Handle, sync::mpsc};
+#[cfg(not(target_family = "wasm"))]
+use tokio::runtime::Handle;
+use tokio::sync::mpsc;
 
 use crate::metrics::{MetricSide, TrafficMetrics};
 use crate::server::local_comm::LocalCommService;
+use crate::server::spawn::spawn_detached;
 use crate::server::transfer::TensorTransfer;
 use crate::shared::{RequestId, SessionId, Task, TaskResponse, TaskResponseContent};
 
@@ -83,16 +92,12 @@ where
     B: BackendIr,
     T: TensorTransfer<B>,
 {
-    /// Create a session's handler and spawn its worker thread, returning the inbound task sender
-    /// the submit handler forwards to.
-    ///
-    /// Must be called from within the tokio runtime: it captures [`Handle::current`] so the worker
-    /// can drive the async parts of a task (cross-server / same-host transfers, tensor readbacks,
-    /// response sends) and detach readbacks with `tokio::spawn`.
+    /// Create a session's handler, start its worker, and return the inbound task sender the submit
+    /// handler forwards to.
     ///
     /// The returned [`mpsc::Sender`] is cloned once per submit connection. The worker runs until
     /// every clone is dropped — clean session close or submit-stream disconnect — at which point it
-    /// flushes the runner and exits, so the handle is detached and there is nothing to join.
+    /// flushes the runner and exits, so there is nothing to join.
     pub(crate) fn spawn(
         session_id: SessionId,
         runner: TensorInterpreter<B>,
@@ -100,7 +105,6 @@ where
         transfer: Arc<T>,
         local_comm: Arc<LocalCommService<B>>,
     ) -> mpsc::Sender<Task> {
-        let handle = Handle::current();
         let handler = SessionHandler {
             session_id,
             runner,
@@ -110,47 +114,55 @@ where
             graphs: Mutex::new(HashMap::new()),
             metrics: TrafficMetrics::new(MetricSide::Server),
         };
-
         let (sender, receiver) = mpsc::channel(TASK_CHANNEL_CAPACITY);
-
-        // A plain detached OS thread: it owns the runner and ends itself when the task channel
-        // closes, so there is nothing to join.
-        std::thread::Builder::new()
-            .name(format!("burn-remote-session-{session_id}"))
-            .spawn(move || handler.worker_loop(handle, receiver))
-            .expect("Failed to spawn session worker thread");
-
+        handler.drive(receiver);
         sender
     }
 
-    /// Drain the task channel, running each task to completion in arrival order.
-    fn worker_loop(mut self, handle: Handle, mut receiver: mpsc::Receiver<Task>) {
+    /// Start the worker on its own OS thread, driving [`run`](Self::run) with `block_on` on the
+    /// runtime that owns the endpoint. The dedicated thread keeps synchronously-blocking tasks
+    /// (collective barriers, same-host rendezvous) off the shared runtime — see the module docs.
+    ///
+    /// Must be called from within that runtime: it captures [`Handle::current`].
+    #[cfg(not(target_family = "wasm"))]
+    fn drive(self, receiver: mpsc::Receiver<Task>) {
+        let handle = Handle::current();
+        let session_id = self.session_id;
+        std::thread::Builder::new()
+            .name(format!("burn-remote-session-{session_id}"))
+            .spawn(move || handle.block_on(self.run(receiver)))
+            .expect("Failed to spawn session worker thread");
+    }
+
+    /// Start the worker on the browser event loop. There is a single thread here, so a
+    /// synchronously-blocking task would stall every session; the module docs spell out the
+    /// resulting limitation.
+    #[cfg(target_family = "wasm")]
+    fn drive(self, receiver: mpsc::Receiver<Task>) {
+        spawn_detached(self.run(receiver));
+    }
+
+    /// Drain the task channel, running each task to completion in arrival order, then tear the
+    /// session down in an order that releases its memory.
+    async fn run(mut self, mut receiver: mpsc::Receiver<Task>) {
         let session_id = self.session_id;
 
-        // Drive every task to completion on this thread. The synchronous parts (collective
-        // barriers, op registration, the `local_comm.take` wait, `runner.sync()`) block only this
-        // thread; the async parts are driven by `block_on`, and detached readbacks spawned inside
-        // run on the shared runtime's worker threads, so they make progress while this thread is
-        // parked on a barrier or rendezvous.
-        handle.block_on(async {
-            log::debug!("Session {session_id} worker started");
-            while let Some(task) = receiver.recv().await {
-                if let Err(err) = self.process_task(task).await {
-                    // One task failing doesn't tear down the session: read/sync/dtype failures
-                    // surface to the client through their response, fire-and-forget failures are
-                    // logged here, and the worker keeps processing subsequent tasks.
-                    log::error!("Task on session {session_id} failed: {err}");
-                }
+        log::debug!("Session {session_id} worker started");
+        while let Some(task) = receiver.recv().await {
+            if let Err(err) = self.process_task(task).await {
+                // One task failing doesn't tear down the session: read/sync/dtype failures surface
+                // to the client through their response, fire-and-forget failures are logged here,
+                // and the worker keeps processing subsequent tasks.
+                log::error!("Task on session {session_id} failed: {err}");
             }
+        }
 
-            // Reclaim any same-host transfers this session exposed that no target ever took, so a
-            // half-finished transfer doesn't strand device memory in the shared registry.
-            self.local_comm.purge_session(session_id).await;
-        });
+        // Reclaim any same-host transfers this session exposed that no target ever took, so a
+        // half-finished transfer doesn't strand device memory in the shared registry.
+        self.local_comm.purge_session(session_id).await;
 
         // The task channel closed: every submit connection bound to this session has gone away
-        // (clean `Close` or disconnect). Tear the session down in an order that actually releases
-        // its memory.
+        // (clean `Close` or disconnect).
         log::debug!("Session {session_id} worker draining and exiting");
 
         // Destructure so we control drop order explicitly. The `..` fields (response sender, comm
@@ -310,7 +322,7 @@ where
                 // the data service's `new_tensor_notify`, so there is no race.
                 let fut = stream_id.executes(|| self.runner.read_tensor_async(tensor));
                 let transfer = self.transfer.clone();
-                tokio::spawn(async move {
+                spawn_detached(async move {
                     match fut.await {
                         Ok(data) => {
                             transfer.expose_data(data, count, capability, target).await;
@@ -342,7 +354,7 @@ where
                 // responses by request id, so out-of-order completion is fine.
                 let fut = stream_id.executes(|| self.runner.read_tensor_async(tensor));
                 let sender = self.response_sender.clone();
-                tokio::spawn(async move {
+                spawn_detached(async move {
                     let data = fut.await;
                     if sender
                         .send(TaskResponse {
