@@ -43,10 +43,14 @@ cargo run -p remote-notebook -- burn-web
 
 ### Rich tensor display
 
-Ending a cell in `tensor.show()` renders a 2-D tensor as a heatmap table instead of plain text.
-`show()` comes from this crate's [`ShowExt`](src/lib.rs) trait, which wraps the tensor in a type
-whose `evcxr_display` method reads it back and emits an HTML MIME bundle. The renderer is a pure
-function unit-tested with `cargo test -p remote-notebook`.
+Two display helpers come from this crate's [`src/lib.rs`](src/lib.rs):
+
+- `tensor.show()` renders a 2-D tensor as a color-coded table of values (good for small matrices).
+- `tensor.heatmap()` renders an SVG grid colored by value with no numbers (good for large matrices).
+
+Each wraps the tensor in a type whose `evcxr_display` method reads it back and emits the
+corresponding MIME bundle (`text/html` or `image/svg+xml`). The renderers are pure functions
+unit-tested with `cargo test -p remote-notebook`.
 
 To depend on a published Burn instead of the local checkout, replace the `:dep burn = { path = ... }`
 line with a version, e.g. `:dep burn = { version = "0.22", features = ["extension", "remote-iroh", "flex"] }`.
