@@ -104,7 +104,7 @@ macro_rules! with_backend {
             DispatchDevice::LibTorch(_) => {
                 panic!("LibTorch is not supported as a remote-server backend (no BackendIr impl)")
             }
-            #[cfg(feature = "remote")]
+            #[cfg(feature = "remote-iroh")]
             DispatchDevice::Remote(_) => {
                 panic!("Cannot host a remote server on a remote device")
             }
@@ -120,8 +120,9 @@ macro_rules! with_backend {
 ///
 /// The dispatch device selects which backend executes operations server-side; the server
 /// then hosts that backend's devices (single host, multi-device), indexed by hardware device
-/// index. The backend is resolved from the dispatch device variant, and the device list is
-/// chosen via the `host_devices` helper.
+/// index. See [`with_backend`] for how the backend is resolved and [`host_devices`] for how its
+/// device list is chosen.
+#[cfg(feature = "remote")]
 pub fn start_websocket(device: DispatchDevice, port: u16) {
     with_backend!(device, |B, devices| {
         burn_remote::server::start_websocket::<B>(devices, port)
@@ -131,14 +132,28 @@ pub fn start_websocket(device: DispatchDevice, port: u16) {
 /// Start a websocket remote server on the caller's tokio runtime.
 ///
 /// The async counterpart of [`start_websocket`]; the two share the same backend-resolution match
-/// and differ only in awaiting the server future.
+/// (see [`with_backend`]) and differ only in awaiting the server future.
+#[cfg(feature = "remote")]
 pub async fn start_websocket_async(device: DispatchDevice, port: u16) {
     with_backend!(device, |B, devices| {
         burn_remote::server::start_websocket_async::<B>(devices, port).await
     })
 }
 
+/// Build a running Iroh compute server and return its router, without blocking.
+///
+/// Unlike [`start_iroh_async`], the accept loop runs on the ambient executor (a tokio runtime on
+/// native, the JS event loop in the browser), so this returns immediately. It is the entry a
+/// browser compute peer uses; drop or `shutdown` the returned router to stop serving.
+pub fn serve_iroh(
+    device: DispatchDevice,
+    node: burn_remote::RemoteNode,
+) -> burn_remote::server::Router {
+    with_backend!(device, |B, devices| node.serve::<B>(devices))
+}
+
 /// Start an Iroh remote compute node, blocking the current thread.
+#[cfg(not(target_family = "wasm"))]
 pub fn start_iroh(device: DispatchDevice, node: burn_remote::RemoteNode) {
     with_backend!(device, |B, devices| {
         burn_remote::server::start_iroh::<B>(node, devices)
@@ -146,6 +161,7 @@ pub fn start_iroh(device: DispatchDevice, node: burn_remote::RemoteNode) {
 }
 
 /// Start an Iroh remote compute node on the caller's async runtime.
+#[cfg(not(target_family = "wasm"))]
 pub async fn start_iroh_async(device: DispatchDevice, node: burn_remote::RemoteNode) {
     with_backend!(device, |B, devices| {
         burn_remote::server::start_iroh_async::<B>(node, devices).await

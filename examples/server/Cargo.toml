@@ -18,4 +18,5 @@ rocm = ["burn/rocm"]
 flex = ["burn/flex"]
 
 [dependencies]
-burn = { workspace = true, features = ["default", "server"] }
+# `remote` brings the legacy websocket server transport this example uses (Channel::WebSocket).
+burn = { workspace = true, features = ["default", "server", "remote"] }

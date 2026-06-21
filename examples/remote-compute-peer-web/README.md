@@ -10,12 +10,19 @@ This is the demonstration for the wasm server port (see
 It proves the server half of Burn Remote runs in wasm: a browser endpoint accepts inbound Iroh
 connections (brokered by a relay) and executes tensor ops on its own backend.
 
+## API: `burn::server::serve`
+
+The peer uses the umbrella [`burn::server::serve(device, node)`] entry, which returns a running
+server without blocking — its accept loop runs on the JS event loop in the browser (and on a tokio
+runtime natively). `serve` is the wasm-capable Iroh-server path; the blocking `start` / `start_async`
+helpers and the WebSocket transport remain native-only.
+
 ## Backend: WebGPU
 
-The peer serves on the **WebGPU backend** (`burn-wgpu`), so the tab donates its GPU. This needs a
-one-line fix to `cubecl-runtime` (gating `ComputeClient::read_lazy` to non-wasm, matching its async
-twin), carried on the `jwric/cubecl` fork the workspace points at — without it the WebGPU backend
-does not build for `wasm32`.
+The peer serves on the **WebGPU backend** (`Device::wgpu_async`), so the tab donates its GPU. This
+needs a one-line fix to `cubecl-runtime` (gating `ComputeClient::read_lazy` to non-wasm, matching its
+async twin), carried on the `jwric/cubecl` fork the workspace points at — without it the WebGPU
+backend does not build for `wasm32`.
 
 ## Limitations of a browser peer
 
