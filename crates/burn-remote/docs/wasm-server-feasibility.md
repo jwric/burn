@@ -87,13 +87,18 @@ is the session worker, not Iroh. Staged so each step keeps native green:
    `ComputeClient::read_lazy` to non-wasm, matching its async twin), carried on the `jwric/cubecl`
    fork the workspace points at.
 
+## Umbrella API (done)
+
+`burn::server::serve(device, node)` is the portable, non-blocking server entry and works in the
+browser. Getting there meant decoupling the server from the websocket transport across the feature
+graph: `server` (in `burn-dispatch`, `burn-tensor`, `burn`) now pulls the Iroh server core only
+(`remote-server = ["remote-iroh", ...]`), and the legacy websocket server — `Channel::WebSocket`,
+`start`/`start_async`'s websocket arm, and the `start_websocket*` dispatch entries — is gated behind
+the `remote` feature. The blocking `start`/`start_async` helpers are additionally native-only. The
+browser example serves through `burn::server::serve` on a `Device::wgpu_async` WebGPU device.
+
 ## Not yet done
 
-- A wasm-capable path through the umbrella `burn::server`: today `remote-server` pulls `remote`,
-  which forces `burn-remote/websocket` (and thus `burn-communication`), so the umbrella server is
-  native-only by construction. The example uses `burn-remote` + a backend directly to avoid that;
-  exposing a browser server through `burn::server` needs the server/websocket features decoupled
-  across `burn-dispatch`, `burn-tensor`, and `burn`.
 - A live browser-serves / native-connects end-to-end run (needs a browser + relay; verified here
   only by compilation).
 

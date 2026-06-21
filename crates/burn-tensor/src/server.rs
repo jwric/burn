@@ -6,18 +6,24 @@
 //! primary transport and WebSocket is retained for compatibility.
 //!
 //! ```rust,ignore
-//! use burn::{Device, server::{start_async, Channel, RemoteNode}};
+//! use burn::{Device, server::{serve, RemoteNode}};
 //!
 //! let node = RemoteNode::bind().await?;
-//! start_async(Device::default(), Channel::Iroh { node }).await;
+//! // Returns immediately; the server runs on the ambient executor (a tokio runtime natively, the
+//! // event loop in the browser). Keep the router alive for as long as you want to serve.
+//! let _router = serve(Device::default(), node);
 //! ```
 //!
+//! [`serve`] is the portable entry and works in the browser. The blocking [`start`] / [`start_async`]
+//! helpers and the WebSocket transport are native-only.
+//!
 //! User-defined backends that implement `BackendIr` but aren't part of
-//! `DispatchDevice` should call `burn_remote::server::start_iroh_async` (or the legacy
-//! `start_websocket_async`) directly with the concrete backend type parameter.
+//! `DispatchDevice` should call `burn_remote::server::serve` (or `start_iroh_async`) directly with
+//! the concrete backend type parameter.
 
 use crate::Device;
 pub use burn_dispatch::backends::remote::RemoteNode;
+pub use burn_dispatch::backends::remote::server::Router;
 pub use burn_dispatch::devices::BURN_REMOTE_ALPN;
 
 /// Transport used to serve remote clients.
@@ -30,10 +36,22 @@ pub enum Channel {
         node: RemoteNode,
     },
     /// WebSocket server bound to `0.0.0.0:port`.
+    #[cfg(feature = "remote")]
     WebSocket {
         /// Port to bind on.
         port: u16,
     },
+}
+
+/// Start a remote-execution server and return its running router, without blocking.
+///
+/// Unlike [`start_async`], this returns immediately with the running server; its accept loop runs
+/// on the ambient executor (a tokio runtime on native, the event loop in the browser), which is why
+/// it also works in wasm. Drop the returned [`Router`] to stop serving. Iroh transport only.
+///
+/// See [`start`] for backend-selection rules.
+pub fn serve(device: Device, node: RemoteNode) -> Router {
+    burn_dispatch::remote_server::serve_iroh(device.into_dispatch(), node)
 }
 
 /// Start a remote-execution server, blocking the current thread.
@@ -47,11 +65,13 @@ pub enum Channel {
 /// Panics if `device` selects a backend that doesn't support remote execution
 /// (currently `LibTorch`, or a `Remote` device — hosting on a remote device
 /// makes no sense).
+#[cfg(not(target_family = "wasm"))]
 pub fn start(device: Device, channel: Channel) {
     match channel {
         Channel::Iroh { node } => {
             burn_dispatch::remote_server::start_iroh(device.into_dispatch(), node)
         }
+        #[cfg(feature = "remote")]
         Channel::WebSocket { port } => {
             burn_dispatch::remote_server::start_websocket(device.into_dispatch(), port)
         }
@@ -61,11 +81,13 @@ pub fn start(device: Device, channel: Channel) {
 /// Start a remote-execution server on the caller's async runtime.
 ///
 /// See [`start`] for backend-selection rules.
+#[cfg(not(target_family = "wasm"))]
 pub async fn start_async(device: Device, channel: Channel) {
     match channel {
         Channel::Iroh { node } => {
             burn_dispatch::remote_server::start_iroh_async(device.into_dispatch(), node).await
         }
+        #[cfg(feature = "remote")]
         Channel::WebSocket { port } => {
             burn_dispatch::remote_server::start_websocket_async(device.into_dispatch(), port).await
         }

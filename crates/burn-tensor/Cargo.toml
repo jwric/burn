@@ -49,7 +49,8 @@ cpu = ["burn-dispatch/cpu", "cubecl-cpu"]
 autodiff = ["burn-dispatch/autodiff"]
 remote-iroh = ["std", "burn-dispatch/remote-iroh"]
 remote = ["remote-iroh", "burn-dispatch/remote"]
-server = ["remote", "burn-dispatch/remote-server"]
+# Iroh compute server. Wasm-compatible; enable `remote` as well for the legacy websocket server.
+server = ["remote-iroh", "burn-dispatch/remote-server"]
 
 # For backend extensions
 extension = []

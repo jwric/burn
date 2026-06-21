@@ -68,7 +68,9 @@ autodiff = ["burn-autodiff"]
 remote-iroh = ["std", "burn-remote", "burn-remote/iroh"]
 # Full remote client: Iroh plus the legacy websocket transport.
 remote = ["remote-iroh", "burn-remote/websocket"]
-remote-server = ["remote", "burn-remote/server"]
+# Iroh compute server. Wasm-compatible (no websocket); the legacy websocket server entries are
+# additionally gated on `remote`, which brings the websocket transport.
+remote-server = ["remote-iroh", "burn-remote/server"]
 
 # Backend features
 autotune = [
