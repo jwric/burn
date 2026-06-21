@@ -60,6 +60,25 @@ Making it work in the browser is the same shape of port already done for the cli
 - **#6 (volunteer pool)** is then #7 + a coordinator (liveness, work assignment, churn) + a
   distribution layer (#4 collectives or #5 graph replay) + the public-data-only privacy constraint.
 
+## Porting plan
+
+Mapping the `serve` path showed the work is larger than a single change, and the central obstacle
+is the session worker, not Iroh. Staged so each step keeps native green:
+
+1. **Task spawning (done).** A `server::spawn::spawn_detached` helper splits native `tokio::spawn`
+   from browser `spawn_local`, mirroring the client. The Iroh session and transfer streams route
+   through it, and the session response writer signals completion over a `oneshot` instead of a
+   joined handle so both targets share one path.
+2. **Session worker.** `worker::SessionHandler::spawn` runs the compute on a dedicated OS thread
+   driven by `Handle::block_on` (no wasm equivalent). Extract its loop into an `async fn` so native
+   keeps the thread + `block_on` driver while wasm runs it under `spawn_local`. This is the crux.
+3. **Feature split.** Give the Iroh server core a wasm-capable feature set that excludes
+   `tokio/rt-multi-thread`, `tokio/time`, and `burn-communication`. The blocking `start_iroh` /
+   `start_iroh_async` helpers and the WebSocket transport stay native-only. `transfer.rs`'s
+   `tokio::time` use needs a browser timer or a feature gate.
+4. **Compute backend.** Wire a WebGPU (`burn-wgpu`) device as the served backend in a browser
+   example, then a minimal browser-serves / native-connects test.
+
 ## Honest constraints (unchanged by this finding)
 
 - **Relays are always in the path** — "serverless" means no *application* backend, but iroh relays

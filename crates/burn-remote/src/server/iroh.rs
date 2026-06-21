@@ -13,6 +13,7 @@ use crate::{
     server::{
         service::{FetchService, SubmitService, parse_init_handshake},
         session::SessionManager,
+        spawn::spawn_detached,
         transfer::IrohTransfer,
     },
     shared::{PROTOCOL_VERSION, RemoteMessage, SessionInfo, TaskResponse, TaskResponseContent},
@@ -129,14 +130,19 @@ impl<B: BackendIr> IrohRemoteProtocol<B> {
             .map_err(|err| format!("Failed to encode session handshake response: {err}"))?;
         crate::node::send_frame(&mut send, &info).await?;
 
-        let writer = tokio::spawn(async move {
-            while let Some(response) = responses.recv().await {
-                let bytes = rmp_serde::to_vec(&response)
-                    .map_err(|err| format!("Failed to encode task response: {err}"))?;
-                crate::node::send_frame(&mut send, &bytes).await?;
+        let (writer_done, writer_result) = tokio::sync::oneshot::channel();
+        spawn_detached(async move {
+            let result = async {
+                while let Some(response) = responses.recv().await {
+                    let bytes = rmp_serde::to_vec(&response)
+                        .map_err(|err| format!("Failed to encode task response: {err}"))?;
+                    crate::node::send_frame(&mut send, &bytes).await?;
+                }
+                send.finish()
+                    .map_err(|err| format!("Failed to finish session response stream: {err}"))
             }
-            send.finish()
-                .map_err(|err| format!("Failed to finish session response stream: {err}"))
+            .await;
+            let _ = writer_done.send(result);
         });
 
         let result = loop {
@@ -183,10 +189,10 @@ impl<B: BackendIr> IrohRemoteProtocol<B> {
 
         drop(task_sender);
         sessions.close(init.session_id).await;
-        match writer.await {
+        match writer_result.await {
             Ok(Ok(())) => {}
             Ok(Err(err)) => log::warn!("Iroh response writer failed: {err}"),
-            Err(err) => log::warn!("Iroh response writer task failed: {err}"),
+            Err(_) => log::warn!("Iroh response writer task stopped before finishing"),
         }
         result
     }
@@ -209,7 +215,7 @@ impl<B: BackendIr> ProtocolHandler for IrohRemoteProtocol<B> {
                     let sessions = self.sessions.clone();
                     let authorizer = self.authorizer.clone();
                     let server_id = self.node.id();
-                    tokio::spawn(async move {
+                    spawn_detached(async move {
                         if let Err(err) = Self::handle_session(
                             sessions, authorizer, server_id, remote_id, send, recv,
                         )
@@ -221,7 +227,7 @@ impl<B: BackendIr> ProtocolHandler for IrohRemoteProtocol<B> {
                 }
                 crate::node::StreamKind::TensorTransfer => {
                     let transfer = self.transfer.clone();
-                    tokio::spawn(async move {
+                    spawn_detached(async move {
                         if let Err(err) = transfer.handle_stream(remote_id, send, recv).await {
                             log::warn!("Iroh tensor-transfer stream failed: {err}");
                         }
