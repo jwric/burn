@@ -1,0 +1,30 @@
+[package]
+authors = ["Jonathan Richard"]
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+name = "remote-playground-web"
+publish = false
+version.workspace = true
+description = "A browser tensor REPL whose expressions are evaluated on a remote Iroh GPU peer"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = ["flex"]
+
+# Local fallback backend for `Device::default()`; the REPL evaluates on the remote device.
+flex = ["burn/flex"]
+
+[dependencies]
+burn = { workspace = true, features = ["extension", "remote-iroh"] }
+blake3 = { version = "1", default-features = false }
+console_error_panic_hook = { workspace = true }
+
+# Wasm dependencies
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
