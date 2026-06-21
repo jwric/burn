@@ -1,14 +1,6 @@
-//! A Burn compute peer that runs in the browser.
-//!
-//! This is the server side of Burn Remote running in wasm: the tab brings up a WebGPU device, binds
-//! an Iroh endpoint, and serves tensor operations submitted by remote clients. It is the mirror
-//! image of the browser client examples — there the browser offloads work to a remote GPU; here the
-//! browser *is* the GPU peer.
-//!
-//! It uses the umbrella [`burn::server::serve`] API, which returns immediately with a running server
-//! (the accept loop runs on the JS event loop in the browser, a tokio runtime natively). The peer
-//! derives its endpoint identity from a shared topic string, so a client that knows the same topic
-//! addresses it directly.
+//! A Burn compute peer that runs in the browser: it brings up a WebGPU device and serves tensor
+//! operations to remote clients over Iroh, through the umbrella `burn::server::serve` API. The
+//! mirror of the browser client examples — here the browser is the GPU peer.
 
 use wasm_bindgen::prelude::*;
 
@@ -22,13 +14,12 @@ pub fn start() {
     console_error_panic_hook::set_once();
 }
 
-/// Derive a stable secret key from a topic, so the client can compute the matching endpoint id.
 fn topic_key(topic: &str) -> SecretKey {
     let hash = blake3::hash(format!("burn-p2p:{topic}").as_bytes());
     SecretKey::from_bytes(hash.as_bytes())
 }
 
-/// A running compute peer. Dropping it stops serving.
+/// Dropping it stops serving.
 #[wasm_bindgen]
 pub struct ComputePeer {
     node: RemoteNode,
@@ -37,7 +28,6 @@ pub struct ComputePeer {
 
 #[wasm_bindgen]
 impl ComputePeer {
-    /// Bring up a WebGPU device and start serving under `topic`.
     pub async fn start(topic: String) -> Result<ComputePeer, String> {
         console_error_panic_hook::set_once();
 
@@ -59,7 +49,6 @@ impl ComputePeer {
         })
     }
 
-    /// The peer's endpoint id, for clients that address it by id rather than topic.
     pub fn endpoint_id(&self) -> String {
         self.node.id().to_string()
     }

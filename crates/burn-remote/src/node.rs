@@ -36,9 +36,8 @@ struct RemoteNodeInner {
     // In the browser those tasks run on the JS event loop, so no handle is stored.
     #[cfg(all(feature = "client", not(target_family = "wasm")))]
     runtime: tokio::runtime::Handle,
-    // Keeps a node-owned runtime alive for the node's lifetime, so synchronous callers (scripts,
-    // REPLs, notebooks via `bind_blocking`) don't need an ambient runtime. `None` when the node
-    // runs on a caller-owned runtime. Held only as a drop guard; the handle above is what is used.
+    // Drop guard keeping a node-owned runtime alive (set by `bind_blocking`); the handle above is
+    // what is actually used.
     #[cfg(all(feature = "client", not(target_family = "wasm")))]
     #[allow(dead_code)]
     owned_runtime: Option<Arc<tokio::runtime::Runtime>>,
@@ -72,12 +71,9 @@ impl RemoteNode {
         Ok(Self::from_endpoint(endpoint))
     }
 
-    /// Bind a node synchronously, on a runtime the node owns.
-    ///
-    /// Unlike [`bind`](Self::bind), this does not require an ambient Tokio runtime or `async`: it
-    /// builds a multi-threaded runtime, binds the endpoint on it, and keeps it alive for the node's
-    /// lifetime. Intended for synchronous scripts, REPLs, and Rust notebooks (evcxr/Jupyter), where
-    /// the surrounding code is not already running on a runtime.
+    /// Bind a node synchronously on a node-owned runtime, for callers not already in an async
+    /// runtime (scripts, REPLs, Rust notebooks). Unlike [`bind`](Self::bind) it needs no ambient
+    /// runtime or `async`.
     #[cfg(all(feature = "client", not(target_family = "wasm")))]
     pub fn bind_blocking() -> Result<Self, iroh::endpoint::BindError> {
         let runtime = Arc::new(

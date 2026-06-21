@@ -69,13 +69,10 @@ iroh = { workspace = true, optional = true }
 
 tokio-util = { workspace = true, optional = true }
 
-# Native servers drive session workers on a multi-threaded runtime and use tokio timers and OS
-# signals. These features stay off the wasm build, which uses the JS event loop and timers instead.
+# Native server runtime: multi-thread, timers, signals. The wasm build uses the JS event loop/timers.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "signal"] }
 
-# In the browser, spawned Iroh tasks (writer, response demux) run on the JS event loop, and the
-# server's tensor-transfer timers use the JS timer instead of tokio::time.
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
 wasm-bindgen-futures = { workspace = true }
 gloo-timers = { version = "0.3", features = ["futures"] }
