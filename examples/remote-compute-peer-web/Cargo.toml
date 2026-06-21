@@ -15,10 +15,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 burn-remote = { workspace = true, features = ["server", "iroh"] }
-# The browser peer serves on the Flex CPU backend, which compiles for wasm today. The intended
-# WebGPU backend (`burn-wgpu`, `features = ["webgpu"]`) is a one-line swap once the upstream
-# `cubecl-runtime` wasm build is fixed; see the README.
-burn-flex = { workspace = true, features = ["default"] }
+burn-wgpu = { workspace = true, features = ["webgpu"] }
 iroh = { workspace = true }
 blake3 = { version = "1", default-features = false }
 console_error_panic_hook = { workspace = true }

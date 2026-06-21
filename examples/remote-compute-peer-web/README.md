@@ -10,19 +10,12 @@ This is the demonstration for the wasm server port (see
 It proves the server half of Burn Remote runs in wasm: a browser endpoint accepts inbound Iroh
 connections (brokered by a relay) and executes tensor ops on its own backend.
 
-## Backend: CPU now, WebGPU pending an upstream fix
+## Backend: WebGPU
 
-The peer serves on the **Flex CPU backend**, which compiles for wasm today. The intended backend is
-**WebGPU** (`burn-wgpu`), so the tab donates its GPU — but that is currently blocked by an upstream
-bug in the pinned `cubecl-runtime`: `client.rs` declares `mod lazy` as `#[cfg(not(target_family =
-"wasm"))]` while `read_lazy`/`read_lazy_async` use it unconditionally, so the WebGPU backend fails
-to build for `wasm32`. Once that is fixed (gate those methods for wasm too), switching is a one-line
-change:
-
-```rust
-// after `init_setup_async::<burn_wgpu::graphics::WebGpu>(&device, Default::default()).await;`
-let router = node.serve::<burn_wgpu::WebGpu>(vec![device]);
-```
+The peer serves on the **WebGPU backend** (`burn-wgpu`), so the tab donates its GPU. This needs a
+one-line fix to `cubecl-runtime` (gating `ComputeClient::read_lazy` to non-wasm, matching its async
+twin), carried on the `jwric/cubecl` fork the workspace points at — without it the WebGPU backend
+does not build for `wasm32`.
 
 ## Limitations of a browser peer
 

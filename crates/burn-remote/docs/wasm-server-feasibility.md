@@ -81,17 +81,14 @@ is the session worker, not Iroh. Staged so each step keeps native green:
    `start_iroh` / `start_iroh_async` entry points are native-only, and `transfer.rs`'s timers go
    through `server::time` (tokio on native, `gloo-timers` in the browser). The crate now builds and
    passes clippy for `wasm32-unknown-unknown` with `--features server,iroh,client`.
-4. **Browser example (done, CPU backend).** [`examples/remote-compute-peer-web`](../../../examples/remote-compute-peer-web)
-   is a browser compute peer: it binds an Iroh endpoint and serves tensor ops, compiled to wasm.
-   It serves on the **Flex CPU backend** because the intended **WebGPU** backend currently fails to
-   build for `wasm32`: the pinned `cubecl-runtime` declares `mod lazy` as
-   `#[cfg(not(target_family = "wasm"))]` (`client.rs:17`) but its `read_lazy` / `read_lazy_async`
-   methods use it unconditionally (`client.rs:210`, `:225`). Gating those methods for wasm upstream
-   makes the WebGPU peer a one-line swap (`node.serve::<burn_wgpu::WebGpu>(...)`).
+4. **Browser WebGPU example (done).** [`examples/remote-compute-peer-web`](../../../examples/remote-compute-peer-web)
+   is a browser compute peer: it brings up a WebGPU device, binds an Iroh endpoint, and serves
+   tensor ops, compiled to wasm. WebGPU needed a one-line `cubecl-runtime` fix (gating
+   `ComputeClient::read_lazy` to non-wasm, matching its async twin), carried on the `jwric/cubecl`
+   fork the workspace points at.
 
 ## Not yet done
 
-- WebGPU served backend in the browser (blocked on the `cubecl-runtime` fix above).
 - A wasm-capable path through the umbrella `burn::server`: today `remote-server` pulls `remote`,
   which forces `burn-remote/websocket` (and thus `burn-communication`), so the umbrella server is
   native-only by construction. The example uses `burn-remote` + a backend directly to avoid that;
