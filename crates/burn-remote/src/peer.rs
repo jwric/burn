@@ -29,6 +29,25 @@ impl fmt::Display for PeerId {
     }
 }
 
+#[cfg(feature = "iroh")]
+impl PeerId {
+    /// The Iroh endpoint id, or `None` for a non-Iroh peer.
+    pub(crate) fn into_iroh_id(self) -> Option<iroh::EndpointId> {
+        // Without the WebSocket variant this is a single-variant enum, so each configuration uses
+        // the form that reads cleanly for it.
+        #[cfg(feature = "websocket")]
+        return match self {
+            Self::Iroh(id) => Some(id),
+            Self::WebSocket(_) => None,
+        };
+        #[cfg(not(feature = "websocket"))]
+        {
+            let Self::Iroh(id) = self;
+            Some(id)
+        }
+    }
+}
+
 /// A peer identity plus the mutable network paths that may be used to reach it.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 pub enum PeerAddr {

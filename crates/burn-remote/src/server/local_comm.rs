@@ -4,9 +4,8 @@
 //! hand device-resident data to each other, there is no reason to round-trip through the host:
 //! both sessions' [`TensorInterpreter`](burn_router::TensorInterpreter)s live in the same
 //! process, so the source can hand its primitive straight to the target, which moves it onto
-//! its own device with the inner backend's `to_device`. This is the same-host counterpart of
-//! the [`external_comm`](burn_communication::external_comm) service, which moves data *between*
-//! servers over the network.
+//! its own device with the inner backend's `to_device`. This is the same-host counterpart of the
+//! cross-server tensor transfer, which moves data *between* servers over the network.
 //!
 //! Today this backs cross-device `to_device`, but the mechanism is general: any same-host
 //! collective (e.g. all-reduce) that needs ranks to exchange primitives uses the same

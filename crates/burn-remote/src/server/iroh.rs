@@ -260,16 +260,43 @@ impl RemoteNode {
 }
 
 /// Serve Burn Remote over Iroh until the process receives its shutdown signal.
+#[cfg(not(target_family = "wasm"))]
 pub async fn start_iroh_async<B: BackendIr>(node: RemoteNode, devices: Vec<Device<B>>) {
     let router = node.serve::<B>(devices);
-    burn_communication::util::os_shutdown_signal().await;
+    os_shutdown_signal().await;
     if let Err(err) = router.shutdown().await {
         log::warn!("Burn Remote Iroh router shutdown failed: {err}");
     }
 }
 
 /// Serve Burn Remote over Iroh, blocking the current thread.
+#[cfg(not(target_family = "wasm"))]
 #[tokio::main]
 pub async fn start_iroh<B: BackendIr>(node: RemoteNode, devices: Vec<Device<B>>) {
     start_iroh_async::<B>(node, devices).await;
+}
+
+/// Resolve when the process is asked to stop (Ctrl+C, or `SIGTERM` on Unix).
+#[cfg(not(target_family = "wasm"))]
+async fn os_shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }

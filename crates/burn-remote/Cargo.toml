@@ -30,7 +30,8 @@ client = ["tokio/sync"]
 # network traffic. When enabled, `RemoteBackend` is wrapped in `Fusion` (like the CubeCL backends).
 fusion = ["client", "dep:burn-fusion", "burn-router/fusion"]
 # The server core is portable. Native targets get the multi-threaded runtime, timers and signal
-# handling from the cfg(not(wasm)) dependency table below.
+# handling from the `cfg(not(wasm))` dependency table below; the browser server runs its worker on
+# the JS event loop and uses JS timers, so it needs none of those.
 server = ["tokio/sync"]
 iroh = ["dep:iroh", "tokio/io-util"]
 websocket = [
@@ -39,8 +40,6 @@ websocket = [
     "burn-communication/websocket",
     "burn-communication/data-service",
     "dep:tokio-util",
-    "tokio/rt-multi-thread",
-    "tokio/time",
 ]
 
 
@@ -74,9 +73,17 @@ iroh = { workspace = true, optional = true }
 
 tokio-util = { workspace = true, optional = true }
 
-# In the browser, spawned Iroh tasks (writer, response demux) run on the JS event loop.
+# Native servers drive session workers on a multi-threaded runtime and use tokio timers and OS
+# signals. These features stay off the wasm build, which uses the JS event loop and timers instead.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "signal"] }
+
+# In the browser, spawned Iroh tasks (writer, response demux) run on the JS event loop, and the
+# server's tensor-transfer timers use the JS timer instead of tokio::time.
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
 wasm-bindgen-futures = { workspace = true }
+gloo-timers = { version = "0.3", features = ["futures"] }
+futures-util = { workspace = true }
 
 [dev-dependencies]
 burn-flex = { workspace = true, features = ["default"] }

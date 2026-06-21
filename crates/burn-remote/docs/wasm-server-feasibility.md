@@ -74,10 +74,13 @@ is the session worker, not Iroh. Staged so each step keeps native green:
    inner readback spawns route through `spawn_detached`. A browser peer cannot host co-located
    collective / same-host-transfer participants (single event-loop thread), which is documented in
    the worker module; ordinary compute is unaffected.
-3. **Feature split.** Give the Iroh server core a wasm-capable feature set that excludes
-   `tokio/rt-multi-thread`, `tokio/time`, and `burn-communication`. The blocking `start_iroh` /
-   `start_iroh_async` helpers and the WebSocket transport stay native-only. `transfer.rs`'s
-   `tokio::time` use needs a browser timer or a feature gate.
+3. **Feature split (done).** The `server` feature is now portable (`tokio/sync` only); native targets
+   get `rt-multi-thread`, `time`, and `signal` from a `cfg(not(wasm))` dependency table, and
+   `burn-communication` is pulled only by `websocket`. The Iroh path was decoupled from
+   `burn-communication` (its shutdown signal is now a small `tokio::signal` helper), the blocking
+   `start_iroh` / `start_iroh_async` entry points are native-only, and `transfer.rs`'s timers go
+   through `server::time` (tokio on native, `gloo-timers` in the browser). The crate now builds and
+   passes clippy for `wasm32-unknown-unknown` with `--features server,iroh,client`.
 4. **Compute backend.** Wire a WebGPU (`burn-wgpu`) device as the served backend in a browser
    example, then a minimal browser-serves / native-connects test.
 

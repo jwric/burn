@@ -1133,6 +1133,8 @@ dependencies = [
  "burn-std",
  "burn-tensor",
  "bytes",
+ "futures-util",
+ "gloo-timers",
  "iroh",
  "log",
  "rand 0.10.1",
