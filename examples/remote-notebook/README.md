@@ -41,6 +41,13 @@ cargo run -p remote-notebook -- burn-web
    Run the cells top to bottom. The first `:dep` cell compiles Burn once; later cells reuse the
    `device` binding, so each cell submits its operations to the peer and prints the result.
 
+### Rich tensor display
+
+Ending a cell in `tensor.show()` renders a 2-D tensor as a heatmap table instead of plain text.
+`show()` comes from this crate's [`ShowExt`](src/lib.rs) trait, which wraps the tensor in a type
+whose `evcxr_display` method reads it back and emits an HTML MIME bundle. The renderer is a pure
+function unit-tested with `cargo test -p remote-notebook`.
+
 To depend on a published Burn instead of the local checkout, replace the `:dep burn = { path = ... }`
 line with a version, e.g. `:dep burn = { version = "0.22", features = ["extension", "remote-iroh", "flex"] }`.
 
