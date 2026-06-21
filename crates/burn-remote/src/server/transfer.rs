@@ -218,7 +218,7 @@ impl<B: BackendIr> IrohTransfer<B> {
         self.exposed_notify.notify_waiters();
 
         let exposed = self.exposed.clone();
-        tokio::spawn(async move {
+        crate::server::spawn::spawn_detached(async move {
             tokio::time::sleep(TRANSFER_CAPABILITY_TTL).await;
             exposed.lock().await.remove(&capability);
         });
