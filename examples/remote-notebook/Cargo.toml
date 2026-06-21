@@ -1,0 +1,15 @@
+[package]
+authors = ["Jonathan Richard"]
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+name = "remote-notebook"
+publish = false
+version.workspace = true
+description = "Synchronous, notebook-style Burn scripting against a remote Iroh compute peer"
+
+[lints]
+workspace = true
+
+[dependencies]
+burn = { workspace = true, features = ["extension", "remote-iroh", "flex"] }
+blake3 = "1"

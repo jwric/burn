@@ -8836,6 +8836,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "remote-notebook"
+version = "0.22.0-pre.1"
+dependencies = [
+ "blake3",
+ "burn",
+]
+
+[[package]]
 name = "remote-playground-web"
 version = "0.22.0-pre.1"
 dependencies = [
