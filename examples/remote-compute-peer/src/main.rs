@@ -17,13 +17,16 @@ fn topic_key(topic: &str) -> SecretKey {
 }
 
 fn compute_device() -> Device {
-    #[cfg(feature = "wgpu")]
-    {
-        Device::wgpu(burn::tensor::DeviceKind::DefaultDevice)
-    }
-    #[cfg(not(feature = "wgpu"))]
-    {
-        Device::flex()
+    cfg_select! {
+        feature = "cuda" => {
+            Device::cuda(0)
+        },
+        feature = "wgpu" => {
+            Device::wgpu(burn::tensor::DeviceKind::DefaultDevice)
+        },
+        _ => {
+            Device::flex()
+        }
     }
 }
 
@@ -33,7 +36,9 @@ async fn main() {
         .unwrap_or_else(|_| EnvFilter::new("info,burn_remote=debug"));
     fmt().with_env_filter(filter).init();
 
-    let topic = std::env::args().nth(1).unwrap_or_else(|| "burn-web".to_string());
+    let topic = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "burn-web".to_string());
     let endpoint = Endpoint::builder(presets::N0)
         .secret_key(topic_key(topic.as_str()))
         .alpns(vec![BURN_REMOTE_ALPN.to_vec()])
