@@ -69,9 +69,11 @@ is the session worker, not Iroh. Staged so each step keeps native green:
    from browser `spawn_local`, mirroring the client. The Iroh session and transfer streams route
    through it, and the session response writer signals completion over a `oneshot` instead of a
    joined handle so both targets share one path.
-2. **Session worker.** `worker::SessionHandler::spawn` runs the compute on a dedicated OS thread
-   driven by `Handle::block_on` (no wasm equivalent). Extract its loop into an `async fn` so native
-   keeps the thread + `block_on` driver while wasm runs it under `spawn_local`. This is the crux.
+2. **Session worker (done).** The worker's loop is now an `async fn run`; a target-split `drive`
+   keeps native's dedicated thread + `block_on` and adds a browser `spawn_local` driver, and the
+   inner readback spawns route through `spawn_detached`. A browser peer cannot host co-located
+   collective / same-host-transfer participants (single event-loop thread), which is documented in
+   the worker module; ordinary compute is unaffected.
 3. **Feature split.** Give the Iroh server core a wasm-capable feature set that excludes
    `tokio/rt-multi-thread`, `tokio/time`, and `burn-communication`. The blocking `start_iroh` /
    `start_iroh_async` helpers and the WebSocket transport stay native-only. `transfer.rs`'s
