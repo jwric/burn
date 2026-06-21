@@ -1,22 +1,18 @@
 //! A Burn compute peer that runs in the browser.
 //!
-//! This is the server side of Burn Remote running in wasm: the tab binds an Iroh endpoint and
-//! serves tensor operations submitted by remote clients. It is the mirror image of the browser
-//! client examples — there the browser offloads work to a remote peer; here the browser *is* the
-//! peer.
+//! This is the server side of Burn Remote running in wasm: the tab binds an Iroh endpoint, brings
+//! up a WebGPU device, and serves tensor operations submitted by remote clients. It is the mirror
+//! image of the browser client examples — there the browser offloads work to a remote GPU; here the
+//! browser *is* the GPU peer.
 //!
 //! The peer derives its endpoint identity from a shared topic string, so a client that knows the
 //! same topic addresses it directly (the same scheme the native `remote-compute-peer` uses).
-//!
-//! The served backend is Flex (CPU), which compiles for wasm today. Swapping to WebGPU is a
-//! one-line change (serve `burn_wgpu::WebGpu` after `init_setup_async`), pending an upstream
-//! `cubecl-runtime` wasm fix — see the README.
 
 use wasm_bindgen::prelude::*;
 
-use burn_flex::Flex;
 use burn_remote::server::Router;
 use burn_remote::{BURN_REMOTE_ALPN, Endpoint, RemoteNode, SecretKey};
+use burn_wgpu::{WebGpu, WgpuDevice, graphics, init_setup_async};
 use iroh::endpoint::presets;
 
 #[wasm_bindgen(start)]
@@ -39,9 +35,12 @@ pub struct ComputePeer {
 
 #[wasm_bindgen]
 impl ComputePeer {
-    /// Start serving under `topic`.
+    /// Bring up a WebGPU device and start serving under `topic`.
     pub async fn start(topic: String) -> Result<ComputePeer, String> {
         console_error_panic_hook::set_once();
+
+        let device = WgpuDevice::default();
+        init_setup_async::<graphics::WebGpu>(&device, Default::default()).await;
 
         let endpoint = Endpoint::builder(presets::N0)
             .secret_key(topic_key(&topic))
@@ -51,7 +50,7 @@ impl ComputePeer {
             .map_err(|err| err.to_string())?;
 
         let node = RemoteNode::from_endpoint(endpoint);
-        let router = node.serve::<Flex>(vec![Default::default()]);
+        let router = node.serve::<WebGpu>(vec![device]);
 
         Ok(Self {
             node,
