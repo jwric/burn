@@ -170,7 +170,7 @@ impl<B: BackendIr> IrohTransfer<B> {
         capability: TransferCapability,
         remote: iroh::EndpointId,
     ) -> Result<bytes::Bytes, String> {
-        tokio::time::timeout(TRANSFER_WAIT_TIMEOUT, async {
+        crate::server::time::timeout(TRANSFER_WAIT_TIMEOUT, async {
             loop {
                 let notified = self.exposed_notify.notified();
                 tokio::pin!(notified);
@@ -219,7 +219,7 @@ impl<B: BackendIr> IrohTransfer<B> {
 
         let exposed = self.exposed.clone();
         crate::server::spawn::spawn_detached(async move {
-            tokio::time::sleep(TRANSFER_CAPABILITY_TTL).await;
+            crate::server::time::sleep(TRANSFER_CAPABILITY_TTL).await;
             exposed.lock().await.remove(&capability);
         });
     }
@@ -239,13 +239,9 @@ impl<B: BackendIr> TensorTransfer<B> for IrohTransfer<B> {
         capability: TransferCapability,
         target: PeerId,
     ) {
-        let target = match target {
-            PeerId::Iroh(target) => target,
-            #[cfg(feature = "websocket")]
-            PeerId::WebSocket(_) => {
-                log::error!("An Iroh tensor transfer cannot target a non-Iroh peer");
-                return;
-            }
+        let Some(target) = target.into_iroh_id() else {
+            log::error!("An Iroh tensor transfer cannot target a non-Iroh peer");
+            return;
         };
         let bytes = match rmp_serde::to_vec(&TransferMessage::Tensor(data)) {
             Ok(bytes) => bytes::Bytes::from(bytes),
@@ -323,10 +319,8 @@ impl<B: BackendIr> TensorTransfer<B> for IrohTransfer<B> {
     }
 
     async fn fail(&self, capability: TransferCapability, target: PeerId, reason: String) {
-        let target = match target {
-            PeerId::Iroh(target) => target,
-            #[cfg(feature = "websocket")]
-            PeerId::WebSocket(_) => return,
+        let Some(target) = target.into_iroh_id() else {
+            return;
         };
         let bytes = match rmp_serde::to_vec(&TransferMessage::Denied(reason)) {
             Ok(bytes) => bytes.into(),
