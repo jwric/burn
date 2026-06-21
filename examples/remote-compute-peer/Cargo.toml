@@ -11,12 +11,15 @@ description = "Native Burn Remote compute peer reachable over Iroh by a shared t
 workspace = true
 
 [features]
-default = []
+default = ["flex"]
+# Host the compute peer on the CPU via the flex backend (default).
+flex = ["burn/flex"]
 # Host the compute peer on a GPU through the wgpu backend instead of the CPU (flex) default.
 wgpu = ["burn/wgpu"]
+cuda = ["burn/cuda"]
 
 [dependencies]
-burn = { workspace = true, features = ["server", "remote", "flex"] }
+burn = { workspace = true, features = ["server", "remote"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 iroh = { workspace = true }
 blake3 = "1"
