@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -e
+
+rustup target add wasm32-unknown-unknown
+
+if ! command -v wasm-pack &> /dev/null; then
+    echo "wasm-pack could not be found. Installing ..."
+    cargo install wasm-pack
+fi
+
+# Iroh's wasm randomness (pulled in transitively) is selected through getrandom's wasm_js cfg.
+export RUSTFLAGS='-C embed-bitcode=yes -C codegen-units=1 -C opt-level=3 --cfg getrandom_backend="wasm_js"'
+
+mkdir -p pkg
+wasm-pack build --out-dir pkg --release --target web --no-typescript

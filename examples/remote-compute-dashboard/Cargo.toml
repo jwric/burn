@@ -1,0 +1,21 @@
+[package]
+authors = ["Jonathan Richard"]
+edition.workspace = true
+license.workspace = true
+name = "remote-compute-dashboard"
+publish = false
+version.workspace = true
+description = "Shared egui dashboard that renders Burn Remote server telemetry in real time"
+
+[lints]
+workspace = true
+
+[features]
+default = ["render"]
+# The egui renderer. Off by default lets a headless server depend on the Aggregator alone.
+render = ["dep:eframe"]
+
+[dependencies]
+burn-remote = { workspace = true, features = ["iroh"] }
+serde = { workspace = true, features = ["derive"] }
+eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts"], optional = true }
