@@ -148,6 +148,16 @@ pub fn serve_iroh(
     with_backend!(device, |B, devices| node.serve::<B>(devices))
 }
 
+/// Like [`serve_iroh`], emitting per-session telemetry into `probe`.
+pub fn serve_iroh_with_telemetry(
+    device: DispatchDevice,
+    node: burn_remote::RemoteNode,
+    probe: burn_remote::telemetry::TelemetryProbe,
+) -> burn_remote::server::Router {
+    with_backend!(device, |B, devices| node
+        .serve_with_telemetry::<B>(devices, probe))
+}
+
 /// Start an Iroh remote compute node, blocking the current thread.
 #[cfg(not(target_family = "wasm"))]
 pub fn start_iroh(device: DispatchDevice, node: burn_remote::RemoteNode) {

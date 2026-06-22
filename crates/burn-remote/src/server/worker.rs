@@ -38,6 +38,7 @@ use std::sync::{Arc, Mutex};
 use burn_communication::{Protocol, external_comm::ExternalCommService};
 use burn_ir::{BackendIr, GraphId};
 use burn_router::{Graph, TensorInterpreter};
+use burn_std::id::StreamId;
 #[cfg(not(target_family = "wasm"))]
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
@@ -47,6 +48,10 @@ use crate::server::local_comm::LocalCommService;
 use crate::server::spawn::spawn_detached;
 use crate::server::transfer::TensorTransfer;
 use crate::shared::{RequestId, SessionId, Task, TaskResponse, TaskResponseContent};
+use crate::telemetry::{
+    TelemetryEvent, TelemetryProbe, TensorRef, TransferPhase, TransferScope, classify,
+};
+use burn_ir::OperationIr;
 
 /// Capacity of the per-session task channel feeding the worker thread.
 ///
@@ -83,6 +88,7 @@ where
     /// Accumulates this session's op-graph caching traffic savings, measured from the receiving end
     /// (logged when remote logging is enabled). Owned by the worker thread, so no locking is needed.
     metrics: TrafficMetrics,
+    probe: TelemetryProbe,
 }
 
 impl<B, T> SessionHandler<B, T>
@@ -98,6 +104,7 @@ where
         response_sender: mpsc::Sender<TaskResponse>,
         transfer: Arc<T>,
         local_comm: Arc<LocalCommService<B>>,
+        probe: TelemetryProbe,
     ) -> mpsc::Sender<Task> {
         let handler = SessionHandler {
             session_id,
@@ -107,6 +114,7 @@ where
             local_comm,
             graphs: Mutex::new(HashMap::new()),
             metrics: TrafficMetrics::new(MetricSide::Server),
+            probe,
         };
         let (sender, receiver) = mpsc::channel(TASK_CHANNEL_CAPACITY);
         handler.drive(receiver);
@@ -192,6 +200,7 @@ where
             Task::RegisterOperation(stream_id, op) => {
                 // An op received individually (not as part of a cached graph) is an unfused op.
                 self.metrics.record_unfused_op();
+                self.emit_op(stream_id, &op);
                 stream_id.executes(|| self.runner.register_op(op));
                 Ok(())
             }
@@ -201,9 +210,6 @@ where
                 relative_graph,
                 bindings,
             } => {
-                // Cache the reusable graph for later replay, then immediately execute this first
-                // invocation. The lock guards only the cache insert (cheap `Arc` clone); it is
-                // released before the backend dispatch, like `ExecuteGraph` below.
                 self.metrics.record_registration(graph_id, &relative_graph);
                 self.metrics.record_execution(graph_id, &bindings);
                 stream_id.executes(|| {
@@ -218,8 +224,6 @@ where
                 graph_id,
                 bindings,
             } => {
-                // Clone the graph handle out under a short lock, then replay after releasing it:
-                // the lock guards only the cache lookup, never the backend dispatch.
                 let graph = {
                     let cache = self.graphs.lock().unwrap();
                     cache
@@ -249,16 +253,25 @@ where
                     remote.capability,
                     remote.peer,
                 );
-                let data = self
+                let peer = Some(format!("{:?}", remote.peer));
+                self.emit_transfer(peer.clone(), TransferScope::Remote, TransferPhase::Started);
+                let data = match self
                     .transfer
                     .download_tensor(remote.peer.clone(), remote.capability)
                     .await
-                    .ok_or_else(|| {
-                        format!(
+                {
+                    Some(data) => {
+                        self.emit_transfer(peer, TransferScope::Remote, TransferPhase::Completed);
+                        data
+                    }
+                    None => {
+                        self.emit_transfer(peer, TransferScope::Remote, TransferPhase::Failed);
+                        return Err(format!(
                             "Failed to download tensor for transfer {:?} from {:?}",
                             remote.capability, remote.peer,
-                        )
-                    })?;
+                        ));
+                    }
+                };
                 // Register on the client stream that will consume `new_id`, carried over the
                 // wire — not the arbitrary tokio worker running this task.
                 stream_id.executes(|| self.runner.register_tensor_data_id(new_id, data));
@@ -292,6 +305,7 @@ where
                 // blocks only this session's worker, not the source session's.
                 let kind = self.local_comm.take(transfer_id).await;
                 stream_id.executes(|| self.runner.register_tensor_to_device(new_id, kind));
+                self.emit_transfer(None, TransferScope::Local, TransferPhase::Completed);
                 Ok(())
             }
             Task::ExposeTensorRemote {
@@ -309,10 +323,25 @@ where
                 // the data service's `new_tensor_notify`, so there is no race.
                 let fut = stream_id.executes(|| self.runner.read_tensor_async(tensor));
                 let transfer = self.transfer.clone();
+                let probe = self.probe.clone();
+                let session_id = self.session_id;
+                let peer = Some(format!("{target:?}"));
+                probe.emit(|| TelemetryEvent::Transfer {
+                    session: session_id,
+                    peer: peer.clone(),
+                    scope: TransferScope::Remote,
+                    phase: TransferPhase::Started,
+                });
                 spawn_detached(async move {
                     match fut.await {
                         Ok(data) => {
                             transfer.expose_data(data, count, capability, target).await;
+                            probe.emit(|| TelemetryEvent::Transfer {
+                                session: session_id,
+                                peer,
+                                scope: TransferScope::Remote,
+                                phase: TransferPhase::Completed,
+                            });
                         }
                         Err(e) => {
                             let reason = format!(
@@ -322,6 +351,12 @@ where
                                 "read_tensor_async for transfer {capability:?} failed: {e:?}"
                             );
                             transfer.fail(capability, target, reason).await;
+                            probe.emit(|| TelemetryEvent::Transfer {
+                                session: session_id,
+                                peer,
+                                scope: TransferScope::Remote,
+                                phase: TransferPhase::Failed,
+                            });
                         }
                     }
                 });
@@ -339,6 +374,10 @@ where
                 // here would stall the worker on the GPU→host copy and stop us registering
                 // subsequent ops, draining the device queue into a bubble. The client demuxes
                 // responses by request id, so out-of-order completion is fine.
+                self.probe.emit(|| TelemetryEvent::Read {
+                    session: self.session_id,
+                    request: request_id,
+                });
                 let fut = stream_id.executes(|| self.runner.read_tensor_async(tensor));
                 let sender = self.response_sender.clone();
                 spawn_detached(async move {
@@ -359,6 +398,10 @@ where
                 Ok(())
             }
             Task::SyncBackend(request_id, stream_id) => {
+                self.probe.emit(|| TelemetryEvent::Sync {
+                    session: self.session_id,
+                    request: request_id,
+                });
                 let res = stream_id.executes(|| self.runner.sync());
                 self.send_response(request_id, TaskResponseContent::SyncBackend(res))
                     .await
@@ -387,5 +430,37 @@ where
                     "Response receiver dropped before result for request {request_id} could be sent"
                 )
             })
+    }
+
+    fn emit_op(&self, stream: StreamId, op: &OperationIr) {
+        self.probe.emit(|| match op {
+            OperationIr::Drop(tensor) => TelemetryEvent::TensorDropped {
+                session: self.session_id,
+                tensor: tensor.id,
+            },
+            _ => TelemetryEvent::Op {
+                session: self.session_id,
+                stream,
+                kind: classify(op),
+                inputs: op.inputs().map(|tensor| tensor.id).collect(),
+                outputs: op
+                    .outputs()
+                    .map(|tensor| TensorRef {
+                        id: tensor.id,
+                        shape: tensor.shape.clone(),
+                        dtype: tensor.dtype,
+                    })
+                    .collect(),
+            },
+        });
+    }
+
+    fn emit_transfer(&self, peer: Option<String>, scope: TransferScope, phase: TransferPhase) {
+        self.probe.emit(|| TelemetryEvent::Transfer {
+            session: self.session_id,
+            peer,
+            scope,
+            phase,
+        });
     }
 }

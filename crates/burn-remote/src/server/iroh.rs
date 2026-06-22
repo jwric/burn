@@ -75,8 +75,17 @@ impl<B: BackendIr> fmt::Debug for IrohRemoteProtocol<B> {
 impl<B: BackendIr> IrohRemoteProtocol<B> {
     /// Create a handler hosting `devices` on `node`.
     pub fn new(node: RemoteNode, devices: Vec<Device<B>>) -> Self {
+        Self::with_probe(node, devices, crate::telemetry::TelemetryProbe::disabled())
+    }
+
+    fn with_probe(
+        node: RemoteNode,
+        devices: Vec<Device<B>>,
+        probe: crate::telemetry::TelemetryProbe,
+    ) -> Self {
         let transfer = Arc::new(IrohTransfer::new(node.clone()));
-        let sessions = Arc::new(SessionManager::new(devices, transfer.clone()));
+        let sessions =
+            Arc::new(SessionManager::new(devices, transfer.clone()).with_telemetry(probe));
         Self {
             node,
             sessions,
@@ -248,6 +257,15 @@ impl RemoteNode {
         IrohRemoteProtocol::new(self.clone(), devices)
     }
 
+    /// Like [`RemoteNode::protocol`], emitting per-session telemetry into `probe`.
+    pub fn protocol_with_telemetry<B: BackendIr>(
+        &self,
+        devices: Vec<Device<B>>,
+        probe: crate::telemetry::TelemetryProbe,
+    ) -> IrohRemoteProtocol<B> {
+        IrohRemoteProtocol::with_probe(self.clone(), devices, probe)
+    }
+
     /// Serve Burn Remote as the sole protocol on this endpoint.
     ///
     /// Use [`RemoteNode::protocol`] with an application-owned [`Router`] when sharing the endpoint
@@ -255,6 +273,17 @@ impl RemoteNode {
     pub fn serve<B: BackendIr>(&self, devices: Vec<Device<B>>) -> Router {
         Router::builder(self.endpoint().clone())
             .accept(BURN_REMOTE_ALPN, self.protocol::<B>(devices))
+            .spawn()
+    }
+
+    /// Like [`RemoteNode::serve`], emitting per-session telemetry into `probe`.
+    pub fn serve_with_telemetry<B: BackendIr>(
+        &self,
+        devices: Vec<Device<B>>,
+        probe: crate::telemetry::TelemetryProbe,
+    ) -> Router {
+        Router::builder(self.endpoint().clone())
+            .accept(BURN_REMOTE_ALPN, self.protocol_with_telemetry::<B>(devices, probe))
             .spawn()
     }
 }

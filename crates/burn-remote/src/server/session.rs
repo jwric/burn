@@ -9,6 +9,7 @@ use crate::server::service::{FetchService, SubmitService};
 use crate::server::transfer::TensorTransfer;
 use crate::server::worker::SessionHandler;
 use crate::shared::{SessionId, Task, TaskResponse};
+use crate::telemetry::{TelemetryEvent, TelemetryProbe};
 
 /// Capacity for the per-session response queue.
 ///
@@ -42,6 +43,7 @@ where
     /// Rendezvous registry for same-host tensor transfers between this server's sessions.
     pub(crate) local_comm: Arc<LocalCommService<B>>,
     sessions: Mutex<HashMap<SessionId, Session>>,
+    probe: TelemetryProbe,
 }
 
 struct Session {
@@ -65,7 +67,14 @@ where
             transfer,
             local_comm: Arc::new(LocalCommService::new()),
             sessions: Mutex::new(HashMap::new()),
+            probe: TelemetryProbe::disabled(),
         }
+    }
+
+    /// Emit per-session telemetry into `probe`.
+    pub fn with_telemetry(mut self, probe: TelemetryProbe) -> Self {
+        self.probe = probe;
+        self
     }
 
     /// Resolve the device at `device_index`.
@@ -107,7 +116,12 @@ where
                 sender,
                 self.transfer.clone(),
                 self.local_comm.clone(),
+                self.probe.clone(),
             );
+            self.probe.emit(|| TelemetryEvent::SessionOpened {
+                session: session_id,
+                device: device_index,
+            });
             Session {
                 task_sender,
                 receiver: Some(receiver),
@@ -141,7 +155,10 @@ where
     /// flushes its runner, releasing any backend state held only by this session's tensors.
     async fn close(&self, session_id: SessionId) {
         let mut sessions = self.sessions.lock().await;
-        sessions.remove(&session_id);
+        if sessions.remove(&session_id).is_some() {
+            self.probe
+                .emit(|| TelemetryEvent::SessionClosed { session: session_id });
+        }
     }
 }
 

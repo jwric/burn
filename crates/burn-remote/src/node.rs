@@ -145,6 +145,45 @@ impl RemoteNode {
         &self.inner.endpoint
     }
 
+    /// Snapshot every live peer connection for monitoring: selected-path transport (direct vs
+    /// relay), round-trip time, and bytes moved.
+    pub async fn peer_snapshot(&self) -> crate::telemetry::PeerSnapshot {
+        use crate::telemetry::{PeerLink, PeerSnapshot};
+        let connections = self.inner.connections.lock().await;
+        let mut links = Vec::with_capacity(connections.len());
+        for cell in connections.values() {
+            let Some(connection) = cell.get() else {
+                continue;
+            };
+            if connection.close_reason().is_some() {
+                continue;
+            }
+            let paths = connection.paths();
+            let mut path = None;
+            for candidate in &paths {
+                let info = (
+                    candidate.is_ip(),
+                    candidate.rtt().as_secs_f32() * 1000.0,
+                );
+                let selected = candidate.is_selected();
+                path.get_or_insert(info);
+                if selected {
+                    path = Some(info);
+                    break;
+                }
+            }
+            let stats = connection.stats();
+            links.push(PeerLink {
+                peer: connection.remote_id().to_string(),
+                direct: path.map(|(direct, _)| direct).unwrap_or(false),
+                rtt_ms: path.map(|(_, rtt)| rtt),
+                bytes_sent: stats.udp_tx.bytes,
+                bytes_recv: stats.udp_rx.bytes,
+            });
+        }
+        PeerSnapshot { links }
+    }
+
     #[cfg(all(feature = "client", not(target_family = "wasm")))]
     pub(crate) fn runtime(&self) -> tokio::runtime::Handle {
         self.inner.runtime.clone()

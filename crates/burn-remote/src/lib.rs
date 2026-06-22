@@ -17,6 +17,7 @@ pub mod server;
 mod node;
 mod peer;
 pub(crate) mod shared;
+pub mod telemetry;
 
 /// Network-traffic savings metric for op-graph caching, shared by the client device service and the
 /// server session worker.
