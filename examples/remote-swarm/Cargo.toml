@@ -1,0 +1,34 @@
+[package]
+authors = ["Jonathan Richard"]
+edition.workspace = true
+license.workspace = true
+name = "remote-swarm"
+publish = false
+version.workspace = true
+description = "Gossip-based peer discovery for a Burn Remote compute swarm (scan-to-join GPU pool)"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "swarm-demo"
+path = "src/bin/swarm-demo.rs"
+
+[dependencies]
+# RemoteTicket / endpoint re-exports: the control-plane material a peer advertises and a client dials.
+burn-remote = { workspace = true, features = ["iroh"] }
+iroh = { workspace = true }
+# Pub/sub over the same iroh endpoint. Tracks iroh's releases; 0.101 depends on iroh "1".
+iroh-gossip = { version = "0.101", features = ["net"] }
+
+serde = { workspace = true, features = ["derive", "std"] }
+rmp-serde = { workspace = true }
+bytes = { workspace = true }
+data-encoding = { workspace = true }
+blake3 = "1"
+futures-util = { workspace = true }
+anyhow = "1"
+
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "sync", "signal"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
