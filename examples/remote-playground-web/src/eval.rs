@@ -14,14 +14,12 @@ use alloc::vec::Vec;
 use burn::tensor::activation::{relu, sigmoid, tanh};
 use burn::tensor::{Device, Distribution, Tensor};
 
-/// A value produced by evaluating an expression.
 #[derive(Clone)]
 pub enum Value {
     Tensor(Tensor<2>),
     Scalar(f32),
 }
 
-/// Named bindings that persist across REPL lines.
 pub type Env = BTreeMap<String, Value>;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -193,12 +191,10 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Parse a line into either an assignment target and its expression, or a bare expression.
 fn parse(src: &str) -> Result<(Option<String>, Expr), String> {
     let toks = lex(src)?;
     let mut parser = Parser { src, toks, pos: 0 };
 
-    // `name = expr` when the line starts with `ident =`.
     if let (Some(tok @ Tok::Ident(..)), Some(Tok::Eq)) =
         (parser.toks.first().copied(), parser.toks.get(1).copied())
     {
@@ -323,8 +319,7 @@ fn apply_call(name: &str, args: Vec<Value>, device: &Device) -> Result<Value, St
     })
 }
 
-/// Evaluate one REPL line, updating `env` on assignment. Returns the value to display (the
-/// right-hand side for an assignment, or the expression's value otherwise).
+/// Evaluate one REPL line, updating `env` on assignment, and return the value to display.
 pub fn run_line(src: &str, device: &Device, env: &mut Env) -> Result<Value, String> {
     let (target, expr) = parse(src)?;
     let value = eval(&expr, device, env)?;

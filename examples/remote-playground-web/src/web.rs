@@ -13,7 +13,6 @@ use burn::tensor::Device;
 
 use crate::eval::{Env, Value, run_line};
 
-/// Largest matrix slice rendered back to the page; bigger tensors are truncated with an ellipsis.
 const MAX_SHOWN: usize = 8;
 
 #[wasm_bindgen(start)]
@@ -27,7 +26,6 @@ fn server_endpoint(topic: &str) -> EndpointAddr {
     EndpointAddr::from(secret.public())
 }
 
-/// A REPL session bound to a remote compute peer.
 #[wasm_bindgen]
 pub struct Session {
     device: Device,
@@ -36,7 +34,6 @@ pub struct Session {
 
 #[wasm_bindgen]
 impl Session {
-    /// Connect to the compute peer reachable under `topic`.
     pub async fn connect(topic: String) -> Result<Session, String> {
         console_error_panic_hook::set_once();
 
@@ -49,7 +46,6 @@ impl Session {
         })
     }
 
-    /// Evaluate one line and return its rendered value (or an error message).
     pub async fn run(&mut self, line: String) -> Result<String, String> {
         let value = run_line(&line, &self.device, &mut self.env)?;
         render(value).await
