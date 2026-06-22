@@ -9677,6 +9677,7 @@ dependencies = [
  "eframe",
  "gloo-timers",
  "iroh",
+ "js-sys",
  "remote-compute-dashboard",
  "remote-swarm",
  "wasm-bindgen",

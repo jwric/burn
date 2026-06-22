@@ -1,6 +1,7 @@
 //! A Burn compute peer that runs in the browser and joins a gossip *swarm*: it brings up a WebGPU
-//! device, serves tensor operations to remote clients over Iroh, advertises itself on a shared
-//! gossip topic so clients can discover it, and renders a live egui telemetry dashboard.
+//! device (or falls back to the CPU when WebGPU is unavailable), serves tensor operations to remote
+//! clients over Iroh, advertises itself on a shared gossip topic so clients can discover it, and
+//! renders a live egui telemetry dashboard.
 //!
 //! The page can be launched with a join ticket in the URL fragment (`…/#burnswarm…`, e.g. from a
 //! scanned QR code); it then joins that swarm automatically. Without one, enter a topic label or
@@ -122,7 +123,7 @@ impl eframe::App for PeerApp {
                     ui.vertical_centered(|ui| {
                         ui.heading("Burn browser compute peer");
                         ui.label(
-                            "This tab serves tensor operations on WebGPU and joins a gossip swarm.",
+                            "This tab serves tensor operations on its GPU (or CPU) and joins a gossip swarm.",
                         );
                         ui.add_space(16.0);
                         ui.horizontal(|ui| {
@@ -151,7 +152,7 @@ impl eframe::App for PeerApp {
                     ui.add_space(48.0);
                     ui.vertical_centered(|ui| {
                         ui.spinner();
-                        ui.label("Bringing up WebGPU, binding the endpoint, joining the swarm…");
+                        ui.label("Bringing up the compute backend, binding the endpoint, joining the swarm…");
                     });
                 });
                 ctx.request_repaint();
@@ -182,8 +183,49 @@ async fn startup(input: String, pending: Rc<RefCell<Option<Result<Started, Strin
     *pending.borrow_mut() = Some(result);
 }
 
+/// Whether the browser exposes a usable WebGPU adapter.
+///
+/// This requests an adapter and checks it resolves to a real object — not just that `navigator.gpu`
+/// exists. `Device::wgpu_async` panics *unrecoverably* in wasm when no adapter is available, so this
+/// gate runs first to choose the CPU fallback instead of crashing the tab.
+async fn webgpu_available() -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let navigator = JsValue::from(window.navigator());
+    let Ok(gpu) = js_sys::Reflect::get(&navigator, &JsValue::from_str("gpu")) else {
+        return false;
+    };
+    if gpu.is_undefined() || gpu.is_null() {
+        return false;
+    }
+    let Some(request) = js_sys::Reflect::get(&gpu, &JsValue::from_str("requestAdapter"))
+        .ok()
+        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+    else {
+        return false;
+    };
+    let Some(promise) = request
+        .call0(&gpu)
+        .ok()
+        .and_then(|p| p.dyn_into::<js_sys::Promise>().ok())
+    else {
+        return false;
+    };
+    match wasm_bindgen_futures::JsFuture::from(promise).await {
+        Ok(adapter) => !adapter.is_undefined() && !adapter.is_null(),
+        Err(_) => false,
+    }
+}
+
 async fn build_peer(input: &str) -> Result<Started, String> {
-    let device = Device::wgpu_async(Default::default()).await;
+    // Prefer WebGPU (the device's GPU); fall back to the portable Flex CPU backend on browsers
+    // without WebGPU (older Safari/Firefox, or an insecure context).
+    let (device, backend) = if webgpu_available().await {
+        (Device::wgpu_async(Default::default()).await, "wgpu")
+    } else {
+        (Device::flex(), "flex")
+    };
 
     // The input is either a `burnswarm…` join ticket (scanned QR) or a plain topic label.
     let (topic, bootstrap): (TopicId, Vec<EndpointAddr>) = match JoinTicket::decode(input) {
@@ -215,12 +257,13 @@ async fn build_peer(input: &str) -> Result<Started, String> {
         let _ = endpoint.connect(addr.clone(), GOSSIP_ALPN).await;
     }
 
-    // Advertise how to reach this tab's WebGPU device.
+    // Advertise how to reach this tab's compute device, including which backend it runs so clients
+    // can prefer GPU peers.
     let advert = PeerAdvert::new(
         RemoteTicket::new(endpoint.addr(), Vec::new()),
-        Some(format!("browser · {}", short_id(&node))),
+        Some(format!("browser · {backend} · {}", short_id(&node))),
         PeerCaps {
-            backend: "wgpu".to_string(),
+            backend: backend.to_string(),
             device: None,
             devices: 1,
             browser: true,

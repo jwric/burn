@@ -51,12 +51,18 @@ map, and a recent op stream. The shared dashboard lives in
 [`remote-compute-dashboard`](../remote-compute-dashboard); the same UI, fed the same state over
 SSE, backs the native peer's HTTP dashboard (see [`remote-dashboard-web`](../remote-dashboard-web)).
 
-## Backend: WebGPU
+## Backend: WebGPU, with a CPU fallback
 
-The peer serves on the **WebGPU backend** (`Device::wgpu_async`), so the tab donates its GPU. This
-needs a one-line fix to `cubecl-runtime` (gating `ComputeClient::read_lazy` to non-wasm, matching its
-async twin), carried on the `jwric/cubecl` fork the workspace points at — without it the WebGPU
-backend does not build for `wasm32`.
+The peer serves on the **WebGPU backend** (`Device::wgpu_async`) when the browser exposes a usable
+adapter, so the tab donates its GPU. WebGPU needs a one-line fix to `cubecl-runtime` (gating
+`ComputeClient::read_lazy` to non-wasm, matching its async twin), carried on the `jwric/cubecl` fork
+the workspace points at — without it the WebGPU backend does not build for `wasm32`.
+
+When WebGPU is unavailable (older Safari/Firefox, or an insecure context), the peer falls back to the
+portable **Flex CPU backend** (`Device::flex`) so the tab can still join and serve — slower, but it
+works everywhere. It probes `navigator.gpu.requestAdapter()` before choosing, because `wgpu_async`
+panics *unrecoverably* in wasm when there's no adapter. The advertised `PeerCaps.backend` reports
+which backend a peer runs, so a client can prefer GPU peers.
 
 ## Limitations of a browser peer
 
