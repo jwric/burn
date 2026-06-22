@@ -1,6 +1,6 @@
 use crate::PeerAddr;
 use crate::shared::{
-    LocalTransferId, PROTOCOL_VERSION, RemoteMessage, RequestId, SessionId, SessionInfo,
+    GraphId, LocalTransferId, PROTOCOL_VERSION, RemoteMessage, RequestId, SessionId, SessionInfo,
     SessionInit, Task, TaskResponse, TaskResponseContent, TensorRemote, TransferCapability,
 };
 use burn_backend::{
@@ -505,6 +505,35 @@ impl RemoteService {
         tensor: TensorIr,
     ) -> oneshot::Receiver<TaskResponseContent> {
         self.submit_request(|id| Task::ReadTensor(id, stream_id, tensor))
+    }
+
+    pub fn register_graph(
+        &mut self,
+        stream_id: StreamId,
+        graph_id: GraphId,
+        ops: Vec<OperationIr>,
+        outputs: Vec<TensorIr>,
+    ) {
+        self.submit_task(Task::RegisterGraph {
+            stream_id,
+            graph_id,
+            ops,
+            outputs,
+        });
+    }
+
+    pub fn run_graph(
+        &mut self,
+        stream_id: StreamId,
+        graph_id: GraphId,
+        inputs: Vec<(TensorId, TensorData)>,
+    ) -> oneshot::Receiver<TaskResponseContent> {
+        self.submit_request(|id| Task::RunGraph {
+            request_id: id,
+            stream_id,
+            graph_id,
+            inputs,
+        })
     }
 
     pub fn sync(&mut self, stream_id: StreamId) -> Result<(), ExecutionError> {

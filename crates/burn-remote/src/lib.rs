@@ -82,6 +82,61 @@ mod tests {
     }
 
     #[test]
+    fn test_graph_replay() {
+        use crate::RemoteBackend;
+        use crate::client::{RemoteChannel, RemoteDevice, record_graph};
+        use crate::shared::GraphId;
+        use burn_backend::ops::FloatTensorOps;
+        use burn_router::{RouterClient, get_client};
+        use burn_tensor::TensorData;
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_io()
+            .build()
+            .unwrap();
+        rt.spawn(crate::server::start_websocket_async::<Flex>(
+            vec![Default::default()],
+            3080,
+        ));
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let remote = RemoteDevice::new("ws://localhost:3080", 0);
+        let client = get_client::<RemoteChannel>(&remote);
+
+        let input = client.register_tensor_data(TensorData::from([1.0f32, 2.0, 3.0]));
+        let input_id = input.clone().into_ir().id;
+
+        // Record `abs(neg(input))` (an intermediate that drops) without executing it.
+        let (output, ops) = record_graph(|| {
+            let negated = RemoteBackend::float_neg(input.clone());
+            RemoteBackend::float_abs(negated)
+        });
+        let output_ir = output.into_ir();
+
+        let graph_id = GraphId::new();
+        client.register_graph(graph_id, ops, vec![output_ir]);
+
+        // Replaying twice with different inputs must reuse the recorded ids cleanly.
+        let out1 = rt
+            .block_on(client.run_graph(
+                graph_id,
+                vec![(input_id, TensorData::from([10.0f32, 20.0, 30.0]))],
+            ))
+            .unwrap();
+        assert_eq!(out1[0].to_vec::<f32>().unwrap(), vec![10.0, 20.0, 30.0]);
+
+        let out2 = rt
+            .block_on(client.run_graph(
+                graph_id,
+                vec![(input_id, TensorData::from([5.0f32, 1.0, 2.0]))],
+            ))
+            .unwrap();
+        assert_eq!(out2[0].to_vec::<f32>().unwrap(), vec![5.0, 1.0, 2.0]);
+
+        rt.shutdown_background();
+    }
+
+    #[test]
     pub fn test_to_device_over_websocket() {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_io()

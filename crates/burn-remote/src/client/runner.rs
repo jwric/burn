@@ -1,16 +1,34 @@
 use super::{RemoteChannel, RemoteClient, service};
-use crate::shared::{LocalTransferId, TaskResponseContent, TensorRemote, TransferCapability};
+use crate::shared::{GraphId, LocalTransferId, TaskResponseContent, TensorRemote, TransferCapability};
 use crate::{PeerAddr, PeerId};
 use burn_backend::{DeviceId, DeviceOps, ExecutionError, StreamId, TensorData};
-use burn_ir::TensorIr;
+use burn_ir::{OperationIr, TensorId, TensorIr};
 use burn_router::{MultiBackendBridge, RouterClient, RouterTensor, get_client};
 use burn_std::DeviceSettings;
 use burn_std::{backtrace::BackTrace, future::DynFut};
+use std::cell::RefCell;
 #[cfg(feature = "websocket")]
 use std::sync::Arc;
 use std::sync::Mutex;
 
 use service::RemoteEndpoint;
+
+thread_local! {
+    static GRAPH_RECORDER: RefCell<Option<Vec<OperationIr>>> = const { RefCell::new(None) };
+}
+
+/// Run `f` with op recording active: ops it issues are captured instead of submitted (a pure
+/// trace), and returned alongside `f`'s result. Resident tensors `f` references stay on the server.
+#[allow(dead_code)]
+pub(crate) fn record_graph<R>(f: impl FnOnce() -> R) -> (R, Vec<OperationIr>) {
+    GRAPH_RECORDER.with(|r| {
+        assert!(r.borrow().is_none(), "graph recording cannot be nested");
+        *r.borrow_mut() = Some(Vec::new());
+    });
+    let result = f();
+    let ops = GRAPH_RECORDER.with(|r| r.borrow_mut().take().expect("recorder was set above"));
+    (result, ops)
+}
 
 // It is very important to block on any request made via the service, since ordering is
 // crucial when registering operations or creating tensors. The `DeviceHandle` queue
@@ -20,11 +38,24 @@ impl RouterClient for RemoteClient {
     type Device = RemoteDevice;
 
     fn register_op(&self, op: burn_ir::OperationIr) {
-        let stream_id = StreamId::current();
         // Device ids in the op's payload are *client* remote device ids; rewrite them to
         // server-local device indices the server can resolve to its own backend devices. Applies
         // to every op — only ops that actually carry device ids are rewritten.
         let op = self.resolve_devices(op);
+
+        // While recording, capture the op (and the drops that flow through here) instead of sending.
+        let op = GRAPH_RECORDER.with(|r| match r.borrow_mut().as_mut() {
+            Some(buf) => {
+                buf.push(op);
+                None
+            }
+            None => Some(op),
+        });
+        let Some(op) = op else {
+            return;
+        };
+
+        let stream_id = StreamId::current();
         self.handle.submit(move |s| s.register_op(stream_id, op));
     }
 
@@ -95,6 +126,43 @@ impl RouterClient for RemoteClient {
 }
 
 impl RemoteClient {
+    /// Register a recorded op stream for replay under `graph_id`.
+    #[allow(dead_code)]
+    pub(crate) fn register_graph(
+        &self,
+        graph_id: GraphId,
+        ops: Vec<OperationIr>,
+        outputs: Vec<TensorIr>,
+    ) {
+        let stream_id = StreamId::current();
+        self.handle
+            .submit(move |s| s.register_graph(stream_id, graph_id, ops, outputs));
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn run_graph(
+        &self,
+        graph_id: GraphId,
+        inputs: Vec<(TensorId, TensorData)>,
+    ) -> DynFut<Result<Vec<TensorData>, ExecutionError>> {
+        let stream_id = StreamId::current();
+        let rx = self
+            .handle
+            .submit_blocking(move |s| s.run_graph(stream_id, graph_id, inputs))
+            .expect("Service call failed");
+
+        Box::pin(async move {
+            match rx.await {
+                Ok(TaskResponseContent::RunGraph(res)) => res,
+                Ok(_) => panic!("Invalid response type for RunGraph"),
+                Err(e) => Err(ExecutionError::Generic {
+                    reason: format!("Failed to run graph: {e:?}"),
+                    backtrace: BackTrace::capture(),
+                }),
+            }
+        })
+    }
+
     /// Rewrite the device ids carried by an op so the server can resolve them.
     ///
     /// This runs for every op, but only ops that carry device ids (currently the collective ops)
