@@ -1,0 +1,25 @@
+[package]
+authors = ["Jonathan Richard"]
+edition.workspace = true
+license.workspace = true
+name = "remote-swarm-cluster"
+publish = false
+version.workspace = true
+description = "Native Burn compute swarm: serving peers + a client that fans work across the roster"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "swarm-cluster"
+path = "src/main.rs"
+
+[dependencies]
+# `server` exposes serve_builder; `remote` the Iroh client (Device::remote_ticket); `flex` the CPU backend.
+burn = { workspace = true, features = ["server", "remote", "flex"] }
+remote-swarm = { path = "../remote-swarm" }
+iroh = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+anyhow = "1"

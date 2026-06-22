@@ -9754,6 +9754,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "remote-swarm-cluster"
+version = "0.22.0-pre.1"
+dependencies = [
+ "anyhow",
+ "burn",
+ "iroh",
+ "remote-swarm",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "remote-training-web"
 version = "0.22.0-pre.1"
 dependencies = [
