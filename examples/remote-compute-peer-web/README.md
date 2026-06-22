@@ -10,12 +10,22 @@ This is the demonstration for the wasm server port (see
 It proves the server half of Burn Remote runs in wasm: a browser endpoint accepts inbound Iroh
 connections (brokered by a relay) and executes tensor ops on its own backend.
 
-## API: `burn::server::serve`
+## API: `burn::server::serve_with_telemetry`
 
-The peer uses the umbrella [`burn::server::serve(device, node)`] entry, which returns a running
+The peer uses [`burn::server::serve_with_telemetry(device, node, probe)`], which returns a running
 server without blocking — its accept loop runs on the JS event loop in the browser (and on a tokio
-runtime natively). `serve` is the wasm-capable Iroh-server path; the blocking `start` / `start_async`
-helpers and the WebSocket transport remain native-only.
+runtime natively). It is the telemetry-emitting variant of `serve`; both are the wasm-capable
+Iroh-server path, while the blocking `start` / `start_async` helpers and the WebSocket transport
+remain native-only.
+
+## Live dashboard
+
+The whole page is an egui canvas (via `eframe`). It aggregates the telemetry probe in-process into
+a current, windowed view: throughput stats (ops/sec, transfers/sec — not totals since boot), an
+animated op-class flow graph showing how tensors transit between op categories, an animated peer
+map, and a recent op stream. The shared dashboard lives in
+[`remote-compute-dashboard`](../remote-compute-dashboard); the same UI, fed the same state over
+SSE, backs the native peer's HTTP dashboard (see [`remote-dashboard-web`](../remote-dashboard-web)).
 
 ## Backend: WebGPU
 
@@ -45,7 +55,7 @@ data and operations it computes on.
    ./run-server.sh   # http://localhost:8000
    ```
 
-3. Enter a topic and click **Start serving**. The page shows the peer's endpoint id.
+3. Enter a topic and click **Start serving**. The canvas switches to the live dashboard.
 
 4. Point a client at the **same topic** — for example run the `remote-playground-web` example and
    connect to `burn-web`. Its tensor operations now execute in the serving tab.

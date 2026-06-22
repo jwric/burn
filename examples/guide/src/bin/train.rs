@@ -17,7 +17,7 @@ fn topic_key(topic: &str) -> SecretKey {
 async fn main() {
     let topic = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "marc".to_string());
+        .unwrap_or_else(|| "my-topic".to_string());
 
     let server_id: EndpointId = topic_key(&topic).public();
 

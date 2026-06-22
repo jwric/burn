@@ -17,11 +17,28 @@ flex = ["burn/flex"]
 # Host the compute peer on a GPU through the wgpu backend instead of the CPU (flex) default.
 wgpu = ["burn/wgpu"]
 cuda = ["burn/cuda"]
+# Serve the live telemetry dashboard over HTTP (SSE stream + the egui wasm viewer) while computing.
+# The viewer is built by build.rs (wasm-pack) and embedded into the binary.
+dashboard = [
+    "dep:remote-compute-dashboard",
+    "dep:axum",
+    "dep:async-stream",
+    "dep:serde_json",
+    "dep:futures-core",
+    "dep:include_dir",
+]
 
 [dependencies]
 burn = { workspace = true, features = ["server", "remote"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "net", "sync"] }
 iroh = { workspace = true }
 blake3 = "1"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+
+remote-compute-dashboard = { path = "../remote-compute-dashboard", default-features = false, optional = true }
+axum = { version = "0.8", optional = true }
+async-stream = { version = "0.3", optional = true }
+serde_json = { version = "1", optional = true }
+futures-core = { version = "0.3", optional = true }
+include_dir = { version = "0.7", optional = true }
