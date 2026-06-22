@@ -1,25 +1,17 @@
 //! Rich display of Burn tensors in a Rust notebook (evcxr/Jupyter).
 //!
-//! evcxr renders the value of a cell's final expression by calling an inherent `evcxr_display`
-//! method on it, if one exists. `Tensor` is defined in Burn, so this crate provides a thin wrapper
-//! that reads the tensor and prints an HTML table (values plus a heatmap background) using evcxr's
-//! display protocol. A cell ending in `c.show()` then renders the matrix instead of needing
-//! `println!`.
+//! evcxr renders a cell's final expression by calling an inherent `evcxr_display` method on it if
+//! one exists. `Tensor` is Burn's type, so these wrappers add that method: `c.show()` renders an
+//! HTML table, `c.heatmap()` an SVG image.
 
 use burn::tensor::Tensor;
 
-/// Largest matrix slice rendered as a table; larger tensors are truncated with an ellipsis.
 const MAX_SHOWN: usize = 16;
-
-/// Largest matrix slice rendered as a heatmap; larger tensors are cropped to this many rows/cols.
 const MAX_HEATMAP: usize = 128;
 
-/// A 2-D tensor wrapped for rich notebook display.
 pub struct Show(pub Tensor<2>);
 
-/// Convenience for turning a tensor into a [`Show`] in a cell's final expression.
 pub trait ShowExt {
-    /// Wrap `self` so a notebook cell renders it as a heatmap table.
     fn show(self) -> Show;
 }
 
@@ -30,12 +22,10 @@ impl ShowExt for Tensor<2> {
 }
 
 impl Show {
-    /// Called by evcxr to render the final expression of a cell.
     pub fn evcxr_display(&self) {
         println!("{}", self.bundle());
     }
 
-    /// The MIME bundle evcxr reads from stdout: the `text/html` table delimited by evcxr's markers.
     fn bundle(&self) -> String {
         let [rows, cols] = self.0.dims();
         let values: Vec<f32> = self.0.clone().into_data().to_vec().unwrap();
@@ -44,12 +34,9 @@ impl Show {
     }
 }
 
-/// A 2-D tensor wrapped for display as a heatmap image, for tensors too large to read as numbers.
 pub struct Heatmap(pub Tensor<2>);
 
-/// Convenience for turning a tensor into a [`Heatmap`] in a cell's final expression.
 pub trait HeatmapExt {
-    /// Wrap `self` so a notebook cell renders it as a heatmap image.
     fn heatmap(self) -> Heatmap;
 }
 
@@ -60,12 +47,10 @@ impl HeatmapExt for Tensor<2> {
 }
 
 impl Heatmap {
-    /// Called by evcxr to render the final expression of a cell.
     pub fn evcxr_display(&self) {
         println!("{}", self.bundle());
     }
 
-    /// The MIME bundle evcxr reads from stdout: the SVG image delimited by evcxr's markers.
     fn bundle(&self) -> String {
         let [rows, cols] = self.0.dims();
         let values: Vec<f32> = self.0.clone().into_data().to_vec().unwrap();
@@ -80,7 +65,6 @@ fn min_max(values: &[f32]) -> (f32, f32) {
     })
 }
 
-/// Background color for a value on a white-to-blue scale over `[min, max]`.
 fn heat_color(value: f32, min: f32, max: f32) -> String {
     let t = if max > min {
         ((value - min) / (max - min)).clamp(0.0, 1.0)
@@ -92,8 +76,6 @@ fn heat_color(value: f32, min: f32, max: f32) -> String {
     format!("rgb({r},{g},255)")
 }
 
-/// Render a matrix as an HTML table, truncating to [`MAX_SHOWN`] rows/columns. Pure function so it
-/// can be unit-tested without a backend.
 pub fn render_html(values: &[f32], rows: usize, cols: usize) -> String {
     let shown_rows = rows.min(MAX_SHOWN);
     let shown_cols = cols.min(MAX_SHOWN);
@@ -125,9 +107,6 @@ pub fn render_html(values: &[f32], rows: usize, cols: usize) -> String {
     html
 }
 
-/// Render a matrix as an SVG heatmap: one colored cell per element, no text, cropped to
-/// [`MAX_HEATMAP`] rows/columns. Cell size adapts so the image stays around 512px on its long edge.
-/// Pure function so it can be unit-tested without a backend.
 pub fn render_svg(values: &[f32], rows: usize, cols: usize) -> String {
     let shown_rows = rows.min(MAX_HEATMAP);
     let shown_cols = cols.min(MAX_HEATMAP);
@@ -174,13 +153,11 @@ mod tests {
         let cols = MAX_SHOWN + 4;
         let values = vec![0.0_f32; rows * cols];
         let html = render_html(&values, rows, cols);
-        // One ellipsis cell per shown row, plus a trailing row ellipsis.
         assert_eq!(html.matches("…").count(), MAX_SHOWN + 1);
     }
 
     #[test]
     fn heat_color_handles_constant_input() {
-        // No range: every cell falls back to the low end rather than dividing by zero.
         assert_eq!(heat_color(3.0, 3.0, 3.0), "rgb(255,255,255)");
     }
 

@@ -1,9 +1,6 @@
 //! Browser entry point: a MNIST classifier whose tensor operations run on a remote Iroh compute
-//! peer rather than in the browser.
-//!
-//! The model is defined and its weights are loaded on the client, but every operation is shipped
-//! to the compute peer and executed on its backend (CPU or GPU). Only the small input and the
-//! output probabilities cross the wire as tensor data.
+//! peer. The model is defined client-side, but every op executes on the peer; only the input and
+//! output probabilities cross the wire.
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -26,17 +23,12 @@ pub fn start() {
     console_error_panic_hook::set_once();
 }
 
-/// Derive the compute peer's endpoint identity from a shared topic string.
-///
-/// The peer binds its endpoint with the secret key derived from the same string, so the public
-/// half computed here addresses it directly — no node id needs to be copied between the two sides.
 fn server_endpoint(topic: &str) -> EndpointAddr {
     let hash = blake3::hash(format!("burn-p2p:{topic}").as_bytes());
     let secret = SecretKey::from_bytes(hash.as_bytes());
     EndpointAddr::from(secret.public())
 }
 
-/// A MNIST classifier bound to a remote compute peer.
 #[wasm_bindgen]
 pub struct RemoteMnist {
     device: Device,
@@ -45,10 +37,7 @@ pub struct RemoteMnist {
 
 #[wasm_bindgen]
 impl RemoteMnist {
-    /// Connect to the compute peer reachable under `topic` and load the model onto it.
-    ///
-    /// Binds a browser-side Iroh endpoint, opens the session to the peer, then builds the model
-    /// and loads its weights — which streams the parameters to the peer as tensor data.
+    /// Connect to the peer reachable under `topic` and load the model onto it.
     pub async fn connect(topic: String) -> Result<RemoteMnist, String> {
         console_error_panic_hook::set_once();
 
@@ -62,13 +51,12 @@ impl RemoteMnist {
         Ok(Self { device, model })
     }
 
-    /// Classify a 28x28 grayscale image, returning the 10 class probabilities.
-    ///
-    /// `input` is a row-major `f32` slice of length 784 with pixel values in `[0, 255]`.
+    /// Classify a 28x28 grayscale image (row-major length-784 `f32`, pixels in `[0, 255]`),
+    /// returning the 10 class probabilities.
     pub async fn inference(&self, input: &[f32]) -> Result<Vec<f32>, String> {
         let input = Tensor::<1>::from_floats(input, &self.device).reshape([1, 28, 28]);
 
-        // Match the normalization used during training (mean/std from the PyTorch MNIST example).
+        // MNIST training mean/std (from the PyTorch example).
         let input = ((input / 255) - 0.1307) / 0.3081;
 
         let output = softmax(self.model.forward(input), 1);
