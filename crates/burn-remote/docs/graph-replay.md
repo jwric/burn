@@ -31,10 +31,18 @@ call. No id remapping and no interpreter changes are needed. Cost: replay is seq
 `SessionHandler` keeps a `graphs: HashMap<GraphId, Graph>`. `RunGraph`: register each input under its
 id, replay each op, read each output (with a consuming status so outputs don't linger), respond.
 
-## Client (later)
+## Client (next)
 
-A recording API that tees the op stream for a closure into a buffer, plus a `RemoteGraph` handle with
-record-once / run-many. Not in the first cut.
+Recording is feasible without server execution: `register_op` is the single funnel for ops, and
+`RouterTensor`'s `Drop` emits `OperationIr::Drop` through it (`burn-router` tensor.rs), so a
+thread-local recorder that tees `register_op` (and suppresses the submit) captures the whole op
+stream including the intermediates' drops. Output `TensorIr`s come from `RouterTensor::into_ir()`,
+which consumes the tensor without recording a drop. Inputs are created before recording (known ids),
+and `RunGraph` re-binds them each call.
+
+Remaining work: the recorder hook in `client/runner.rs`, a `run_graph` service call (mirroring
+`read_tensor`'s submit-blocking + response demux, returning `Vec<TensorData>`), and a `RemoteGraph`
+handle with record-once / run-many — plus the Tensor↔IR bridging for a clean public API.
 
 ## Limits
 
