@@ -28,15 +28,23 @@
 //! shared runtime, so a barrier (or rendezvous) on one session can't stall another session's
 //! worker or a runtime thread.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
-use burn_ir::BackendIr;
+use burn_backend::{ExecutionError, TensorData};
+use burn_ir::{BackendIr, OperationIr, TensorId, TensorIr};
 use burn_router::{RouterClient, TensorInterpreter};
+use burn_std::id::StreamId;
 use tokio::{runtime::Handle, sync::mpsc};
 
 use crate::server::local_comm::LocalCommService;
 use crate::server::transfer::TensorTransfer;
-use crate::shared::{RequestId, SessionId, Task, TaskResponse, TaskResponseContent};
+use crate::shared::{GraphId, RequestId, SessionId, Task, TaskResponse, TaskResponseContent};
+
+struct Graph {
+    ops: Vec<OperationIr>,
+    outputs: Vec<TensorIr>,
+}
 
 /// Capacity of the per-session task channel feeding the worker thread.
 ///
@@ -61,6 +69,7 @@ where
     response_sender: mpsc::Sender<TaskResponse>,
     transfer: Arc<T>,
     local_comm: Arc<LocalCommService<B>>,
+    graphs: Mutex<HashMap<GraphId, Graph>>,
 }
 
 impl<B, T> SessionHandler<B, T>
@@ -92,6 +101,7 @@ where
             response_sender,
             transfer,
             local_comm,
+            graphs: Mutex::new(HashMap::new()),
         };
 
         let (sender, receiver) = mpsc::channel(TASK_CHANNEL_CAPACITY);
@@ -307,7 +317,65 @@ where
                 self.send_response(request_id, TaskResponseContent::DTypeUsage(res))
                     .await
             }
+            Task::RegisterGraph {
+                stream_id: _,
+                graph_id,
+                ops,
+                outputs,
+            } => {
+                self.graphs
+                    .lock()
+                    .unwrap()
+                    .insert(graph_id, Graph { ops, outputs });
+                Ok(())
+            }
+            Task::RunGraph {
+                request_id,
+                stream_id,
+                graph_id,
+                inputs,
+            } => {
+                let result = self.run_graph(stream_id, graph_id, inputs).await;
+                self.send_response(request_id, TaskResponseContent::RunGraph(result))
+                    .await
+            }
         }
+    }
+
+    /// Replay a registered graph: bind `inputs`, run the recorded ops, read the outputs.
+    ///
+    /// Replays are sequential per graph — the recorded ids are reused, and the recorded `Drop`s
+    /// reset per-call tensors while resident weights (referenced, `ReadOnly`) persist.
+    async fn run_graph(
+        &self,
+        stream_id: StreamId,
+        graph_id: GraphId,
+        inputs: Vec<(TensorId, TensorData)>,
+    ) -> Result<Vec<TensorData>, ExecutionError> {
+        let (ops, outputs) = {
+            let graphs = self.graphs.lock().unwrap();
+            let graph = graphs
+                .get(&graph_id)
+                .ok_or_else(|| ExecutionError::WithContext {
+                    reason: format!("unknown graph {graph_id:?}"),
+                })?;
+            (graph.ops.clone(), graph.outputs.clone())
+        };
+
+        let runner = &self.runner;
+        for (id, data) in inputs {
+            stream_id.executes(|| runner.register_tensor_data_id(id, data));
+        }
+        for op in ops {
+            stream_id.executes(|| runner.register_op(op));
+        }
+
+        let mut results = Vec::with_capacity(outputs.len());
+        for output in outputs {
+            let fut = stream_id.executes(|| runner.read_tensor_async(output));
+            results.push(fut.await?);
+        }
+        Ok(results)
     }
 
     async fn send_response(

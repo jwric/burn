@@ -81,6 +81,18 @@ impl SessionId {
     }
 }
 
+/// Identifies a recorded op graph registered on a session for replay.
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, Serialize, Deserialize)]
+pub struct GraphId(u64);
+
+impl GraphId {
+    #[cfg(feature = "client")]
+    #[allow(dead_code)]
+    pub fn new() -> Self {
+        Self(IdGenerator::generate())
+    }
+}
+
 /// A single message on a session's `/submit` (or handshake) stream: either a session-lifecycle
 /// signal (`Init`/`Close`) or a [`Task`] to run.
 #[allow(missing_docs, clippy::large_enum_variant)]
@@ -180,6 +192,21 @@ pub enum Task {
     ReadTensor(RequestId, StreamId, TensorIr),
     SyncBackend(RequestId, StreamId),
     DTypeUsage(RequestId, DType),
+    /// Record an op stream for replay. `outputs` are the tensors `RunGraph` reads back; resident
+    /// weights the ops reference stay registered, per-call inputs are supplied by `RunGraph`.
+    RegisterGraph {
+        stream_id: StreamId,
+        graph_id: GraphId,
+        ops: Vec<OperationIr>,
+        outputs: Vec<TensorIr>,
+    },
+    /// Bind `inputs`, replay the recorded graph, and read its outputs back.
+    RunGraph {
+        request_id: RequestId,
+        stream_id: StreamId,
+        graph_id: GraphId,
+        inputs: Vec<(TensorId, TensorData)>,
+    },
 }
 
 #[allow(missing_docs)]
@@ -198,4 +225,5 @@ pub enum TaskResponseContent {
     ReadTensor(Result<TensorData, ExecutionError>),
     SyncBackend(Result<(), ExecutionError>),
     DTypeUsage(DTypeUsageSet),
+    RunGraph(Result<Vec<TensorData>, ExecutionError>),
 }
