@@ -79,6 +79,11 @@ impl SessionId {
             id: IdGenerator::generate(),
         }
     }
+
+    /// The underlying numeric identifier.
+    pub fn value(&self) -> u64 {
+        self.id
+    }
 }
 
 /// A single message on a session's `/submit` (or handshake) stream: either a session-lifecycle

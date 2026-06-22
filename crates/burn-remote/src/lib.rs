@@ -17,6 +17,7 @@ pub mod server;
 mod node;
 mod peer;
 pub(crate) mod shared;
+pub mod telemetry;
 
 #[cfg(feature = "iroh")]
 pub use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey};

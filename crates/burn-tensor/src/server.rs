@@ -21,6 +21,7 @@
 use crate::Device;
 pub use burn_dispatch::backends::remote::RemoteNode;
 pub use burn_dispatch::backends::remote::server::Router;
+pub use burn_dispatch::backends::remote::telemetry;
 pub use burn_dispatch::devices::BURN_REMOTE_ALPN;
 
 /// Transport used to serve remote clients.
@@ -46,6 +47,18 @@ pub enum Channel {
 /// browser), so unlike [`start_async`] this also works in wasm. See [`start`] for backend selection.
 pub fn serve(device: Device, node: RemoteNode) -> Router {
     burn_dispatch::remote_server::serve_iroh(device.into_dispatch(), node)
+}
+
+/// Like [`serve`], emitting per-session telemetry into `probe` for live monitoring.
+///
+/// Pair with [`telemetry::TelemetryProbe::channel`] to obtain a subscription a dashboard can
+/// drain. Works in the browser and natively.
+pub fn serve_with_telemetry(
+    device: Device,
+    node: RemoteNode,
+    probe: telemetry::TelemetryProbe,
+) -> Router {
+    burn_dispatch::remote_server::serve_iroh_with_telemetry(device.into_dispatch(), node, probe)
 }
 
 /// Start a remote-execution server, blocking the current thread.
