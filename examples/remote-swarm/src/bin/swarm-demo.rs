@@ -47,8 +47,9 @@ async fn main() -> Result<()> {
         "seed" => {
             let label = args
                 .next()
-                .context("usage: swarm-demo [--local] seed <label>")?;
-            run_seed(&label, local).await
+                .context("usage: swarm-demo [--local] seed <label> [landing-url]")?;
+            let landing = args.next();
+            run_seed(&label, landing, local).await
         }
         "peer" => {
             let ticket = args
@@ -107,19 +108,29 @@ fn caps(backend: &str, browser: bool) -> PeerCaps {
     }
 }
 
-async fn run_seed(label: &str, local: bool) -> Result<()> {
+async fn run_seed(label: &str, landing: Option<String>, local: bool) -> Result<()> {
     let endpoint = build_endpoint(local).await?;
     let topic = topic_from_label(label);
     let advert = local_advert(&endpoint, "seed", caps("flex", false));
-    let ticket = JoinTicket::new(topic, vec![endpoint.addr()]);
+    let ticket = JoinTicket::new(topic, vec![endpoint.addr()]).encode();
+
+    // A browser peer launches from `<landing-url>#<ticket>`; without a landing URL we just show the
+    // raw ticket (what the native `peer`/`watch` roles take).
+    let link = match &landing {
+        Some(base) => format!("{}#{ticket}", base.trim_end_matches('#')),
+        None => ticket.clone(),
+    };
 
     println!("\n=== Burn compute swarm — seed ===");
     println!("label : {label}");
     println!("node  : {}", endpoint.id());
-    println!(
-        "\nJOIN TICKET (share out of band / encode in the QR):\n\n{}\n",
-        ticket.encode()
-    );
+    println!("\nJOIN TICKET:\n{ticket}\n");
+    if landing.is_some() {
+        println!("LAUNCH LINK (scan to open a browser compute peer):\n{link}\n");
+    }
+    if let Err(err) = qr2term::print_qr(link.as_str()) {
+        tracing::debug!(?err, "could not render QR code");
+    }
 
     // The seed has no bootstrap: it is the first node.
     let config = SwarmConfig::new(topic).advert(advert);

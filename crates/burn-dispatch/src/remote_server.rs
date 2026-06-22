@@ -158,6 +158,34 @@ pub fn serve_iroh_with_telemetry(
         .serve_with_telemetry::<B>(devices, probe))
 }
 
+/// Build the Iroh [`RouterBuilder`](burn_remote::server::RouterBuilder) hosting `device`'s backend on
+/// [`BURN_REMOTE_ALPN`](burn_remote::BURN_REMOTE_ALPN), without spawning it. The caller can register
+/// additional protocols on the same endpoint (e.g. iroh-gossip for peer discovery) before
+/// `.spawn()`.
+pub fn serve_iroh_builder(
+    device: DispatchDevice,
+    node: burn_remote::RemoteNode,
+) -> burn_remote::server::RouterBuilder {
+    with_backend!(device, |B, devices| {
+        burn_remote::server::Router::builder(node.endpoint().clone())
+            .accept(burn_remote::BURN_REMOTE_ALPN, node.protocol::<B>(devices))
+    })
+}
+
+/// Like [`serve_iroh_builder`], emitting per-session telemetry into `probe`.
+pub fn serve_iroh_builder_with_telemetry(
+    device: DispatchDevice,
+    node: burn_remote::RemoteNode,
+    probe: burn_remote::telemetry::TelemetryProbe,
+) -> burn_remote::server::RouterBuilder {
+    with_backend!(device, |B, devices| {
+        burn_remote::server::Router::builder(node.endpoint().clone()).accept(
+            burn_remote::BURN_REMOTE_ALPN,
+            node.protocol_with_telemetry::<B>(devices, probe),
+        )
+    })
+}
+
 /// Start an Iroh remote compute node, blocking the current thread.
 #[cfg(not(target_family = "wasm"))]
 pub fn start_iroh(device: DispatchDevice, node: burn_remote::RemoteNode) {

@@ -35,8 +35,10 @@ of phones (background tabs suspend, screens lock) needs.
 ## Run the demo
 
 ```sh
-# 1. a seed — prints a JOIN TICKET and acts as the gossip bootstrap node
+# 1. a seed — prints a JOIN TICKET (and a scannable QR) and acts as the gossip bootstrap node.
+#    Pass a landing URL to get a browser-peer launch link: <landing-url>#<ticket>
 cargo run -p remote-swarm --bin swarm-demo -- seed burn-web
+cargo run -p remote-swarm --bin swarm-demo -- seed burn-web http://localhost:8000  # QR opens the browser peer
 
 # 2. compute peers — paste the ticket the seed printed
 cargo run -p remote-swarm --bin swarm-demo -- peer burnswarm... "phone-A"
@@ -72,10 +74,11 @@ cargo run -p remote-swarm --bin swarm-demo -- --local peer burnswarm... "phone-A
 
 ## Status / next steps
 
-- **Native today.** The pure pieces (`message`, `roster`, `ticket`) are dependency-light and unit
-  tested; the networked `Swarm` uses `tokio` for its tasks. Porting `swarm.rs`'s task spawning to
-  `spawn_local`/`n0-future` for `wasm32-unknown-unknown` is the next step — the same native→browser
-  split `burn-remote` already made for its client and server.
+- **Native and browser.** The networked `Swarm` spawns its tasks and times its heartbeats through
+  `n0-future`, on a portable `web-time` clock, so the library compiles for `wasm32-unknown-unknown`
+  as well as native. The browser compute peer
+  ([`remote-compute-peer-web`](../remote-compute-peer-web)) joins the swarm this way, serving compute
+  and gossip on one endpoint. The pure pieces (`message`, `roster`, `ticket`) are unit tested.
 - **Trust.** Adverts are currently taken at face value. Production should sign them (gossip's
   `delivered_from` is the forwarding neighbour, not the author) and/or gate access through the
   `authorization` bytes in the `RemoteTicket`, validated by a `PeerAuthorizer`.

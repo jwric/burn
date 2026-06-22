@@ -2,7 +2,7 @@
 //! roster of everyone else.
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Result;
 use futures_util::StreamExt;
@@ -11,9 +11,12 @@ use iroh::{Endpoint, EndpointId};
 use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
 use iroh_gossip::proto::TopicId;
+// Cross-target spawning and timers: tokio on native, spawn_local + browser timers in wasm.
+use n0_future::task::{AbortOnDropHandle, spawn};
+use n0_future::time::sleep;
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
-use tokio::time::MissedTickBehavior;
+// Portable monotonic clock (std on native, performance.now() in the browser).
+use web_time::Instant;
 
 use crate::message::{Load, PeerAdvert, SwarmMessage};
 use crate::roster::{Roster, RosterEntry};
@@ -67,15 +70,9 @@ struct Inner {
     roster: Mutex<Roster>,
     advert: Mutex<Option<PeerAdvert>>,
     load: Mutex<Load>,
-    tasks: Mutex<Vec<JoinHandle<()>>>,
-}
-
-impl Drop for Inner {
-    fn drop(&mut self) {
-        for task in self.tasks.lock().unwrap().drain(..) {
-            task.abort();
-        }
-    }
+    // Background loops; dropping these handles aborts the tasks, so the swarm stops once the last
+    // `Swarm` clone is gone.
+    tasks: Mutex<Vec<AbortOnDropHandle<()>>>,
 }
 
 /// A live handle to the swarm. Clone it freely; dropping the last clone stops the background tasks.
@@ -146,9 +143,13 @@ impl Swarm {
             tasks: Mutex::new(Vec::new()),
         });
 
-        let broadcaster = tokio::spawn(broadcast_loop(sender, out_rx));
-        let events = tokio::spawn(event_loop(inner.clone(), receiver));
-        let heartbeats = tokio::spawn(heartbeat_loop(inner.clone(), heartbeat, announce_every));
+        let broadcaster = AbortOnDropHandle::new(spawn(broadcast_loop(sender, out_rx)));
+        let events = AbortOnDropHandle::new(spawn(event_loop(inner.clone(), receiver)));
+        let heartbeats = AbortOnDropHandle::new(spawn(heartbeat_loop(
+            inner.clone(),
+            heartbeat,
+            announce_every,
+        )));
         inner
             .tasks
             .lock()
@@ -210,7 +211,7 @@ async fn event_loop(
     inner: Arc<Inner>,
     receiver: impl futures_util::Stream<Item = Result<Event, iroh_gossip::api::ApiError>>,
 ) {
-    tokio::pin!(receiver);
+    let mut receiver = std::pin::pin!(receiver);
     // `None` means our subscription ended (we're shutting down). A transient `Err` can surface when
     // a neighbour drops during churn — skip it and keep maintaining the roster; breaking here would
     // freeze the roster and let the TTL silently prune everyone.
@@ -252,11 +253,9 @@ async fn event_loop(
 }
 
 async fn heartbeat_loop(inner: Arc<Inner>, period: Duration, announce_every: u32) {
-    let mut interval = tokio::time::interval(period);
-    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut ticks: u32 = 0;
     loop {
-        interval.tick().await;
+        sleep(period).await;
         ticks = ticks.wrapping_add(1);
 
         let evicted = inner.roster.lock().unwrap().prune(Instant::now());

@@ -20,7 +20,7 @@
 
 use crate::Device;
 pub use burn_dispatch::backends::remote::RemoteNode;
-pub use burn_dispatch::backends::remote::server::Router;
+pub use burn_dispatch::backends::remote::server::{Router, RouterBuilder};
 pub use burn_dispatch::backends::remote::telemetry;
 pub use burn_dispatch::devices::BURN_REMOTE_ALPN;
 
@@ -59,6 +59,37 @@ pub fn serve_with_telemetry(
     probe: telemetry::TelemetryProbe,
 ) -> Router {
     burn_dispatch::remote_server::serve_iroh_with_telemetry(device.into_dispatch(), node, probe)
+}
+
+/// Build the Iroh [`RouterBuilder`] pre-loaded with the Burn Remote compute protocol, without
+/// spawning it.
+///
+/// Use this to share one endpoint between Burn Remote and other Iroh protocols — e.g. iroh-gossip
+/// for peer discovery. Register the extra protocols on the returned builder, then call `.spawn()`:
+///
+/// ```rust,ignore
+/// let gossip = Gossip::builder().spawn(endpoint.clone());
+/// let router = serve_builder(device, node.clone())
+///     .accept(GOSSIP_ALPN, gossip.clone())
+///     .spawn();
+/// ```
+///
+/// Works in the browser and natively.
+pub fn serve_builder(device: Device, node: RemoteNode) -> RouterBuilder {
+    burn_dispatch::remote_server::serve_iroh_builder(device.into_dispatch(), node)
+}
+
+/// Like [`serve_builder`], emitting per-session telemetry into `probe`.
+pub fn serve_builder_with_telemetry(
+    device: Device,
+    node: RemoteNode,
+    probe: telemetry::TelemetryProbe,
+) -> RouterBuilder {
+    burn_dispatch::remote_server::serve_iroh_builder_with_telemetry(
+        device.into_dispatch(),
+        node,
+        probe,
+    )
 }
 
 /// Start a remote-execution server, blocking the current thread.

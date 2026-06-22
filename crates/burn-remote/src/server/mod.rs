@@ -14,7 +14,7 @@ mod iroh;
 #[cfg(feature = "websocket")]
 pub use base::{start_websocket, start_websocket_async};
 #[cfg(feature = "iroh")]
-pub use ::iroh::protocol::Router;
+pub use ::iroh::protocol::{Router, RouterBuilder};
 #[cfg(feature = "iroh")]
 pub use iroh::{AuthorizationRequest, IrohRemoteProtocol, PeerAuthorizer};
 // The blocking process entry points exist only on native targets; the browser server is driven by

@@ -1,9 +1,11 @@
 //! The live membership table a swarm node maintains by listening to the gossip topic.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use iroh::EndpointId;
+// Portable monotonic clock: std::time::Instant on native, performance.now() in the browser.
+use web_time::Instant;
 
 use crate::message::{Load, PeerAdvert};
 

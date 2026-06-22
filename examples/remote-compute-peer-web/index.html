@@ -29,7 +29,10 @@
 
         async function main() {
             await init();
-            await run("burn");
+            // A scanned QR / shared link lands here as `…/#burnswarm…`; hand the ticket to the peer
+            // so it joins that swarm automatically. Empty means "ask in the UI".
+            const join = decodeURIComponent(location.hash.replace(/^#/, ""));
+            await run("burn", join);
         }
 
         main();

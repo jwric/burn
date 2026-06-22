@@ -10,13 +10,37 @@ This is the demonstration for the wasm server port (see
 It proves the server half of Burn Remote runs in wasm: a browser endpoint accepts inbound Iroh
 connections (brokered by a relay) and executes tensor ops on its own backend.
 
-## API: `burn::server::serve_with_telemetry`
+## Joining the swarm
 
-The peer uses [`burn::server::serve_with_telemetry(device, node, probe)`], which returns a running
-server without blocking — its accept loop runs on the JS event loop in the browser (and on a tokio
-runtime natively). It is the telemetry-emitting variant of `serve`; both are the wasm-capable
-Iroh-server path, while the blocking `start` / `start_async` helpers and the WebSocket transport
-remain native-only.
+This peer doesn't just serve — it **joins a gossip swarm** and advertises itself, so clients can
+discover it instead of needing its address up front. It runs two protocols on one Iroh endpoint:
+Burn Remote (`BURN_REMOTE_ALPN`, the tensor data plane) and iroh-gossip (`GOSSIP_ALPN`, the
+discovery control plane), composed into a single router. Discovery lives in the
+[`remote-swarm`](../remote-swarm) example crate.
+
+The tab launches from a join ticket in the URL fragment (`…/#burnswarm…`, e.g. from a scanned QR
+code), giving it the gossip topic and a bootstrap peer; it then binds a fresh identity, announces its
+`RemoteTicket`, and appears in every other node's roster. A top bar shows the live swarm membership.
+
+## API: `burn::server::serve_builder_with_telemetry`
+
+To share one endpoint between compute and gossip, the peer uses
+[`burn::server::serve_builder_with_telemetry(device, node, probe)`], which returns a `RouterBuilder`
+pre-loaded with the Burn Remote protocol instead of a spawned router. The peer registers the gossip
+protocol on it and calls `.spawn()`:
+
+```rust,ignore
+let gossip = Gossip::builder().spawn(endpoint.clone());
+let router = serve_builder_with_telemetry(device, node.clone(), probe)
+    .accept(GOSSIP_ALPN, gossip.clone())
+    .spawn();
+let swarm = Swarm::join(endpoint.clone(), &gossip, config).await?;
+```
+
+Its accept loop runs on the JS event loop in the browser (and on a tokio runtime natively). The
+plain `serve` / `serve_with_telemetry` entries (which spawn their own single-protocol router) remain
+for peers that don't share the endpoint; the blocking `start` / `start_async` helpers and the
+WebSocket transport stay native-only.
 
 ## Live dashboard
 
@@ -55,7 +79,15 @@ data and operations it computes on.
    ./run-server.sh   # http://localhost:8000
    ```
 
-3. Enter a topic and click **Start serving**. The canvas switches to the live dashboard.
+3. Start a swarm seed and get a launch link + QR (serving the page at, say, `http://localhost:8000`):
 
-4. Point a client at the **same topic** — for example run the `remote-playground-web` example and
-   connect to `burn-web`. Its tensor operations now execute in the serving tab.
+   ```sh
+   cargo run -p remote-swarm --bin swarm-demo -- seed burn-web http://localhost:8000
+   ```
+
+   Open the printed link (or scan the QR) — the page reads the ticket from its `#…` fragment, joins
+   the swarm, and the canvas switches to the live dashboard. Open it on several devices to grow the
+   swarm. (You can also just enter a topic or ticket in the UI and click **Start serving**.)
+
+4. Point a client at the **same topic/swarm** — for example run the `remote-playground-web` example
+   and connect to `burn-web`. Its tensor operations now execute in a serving tab.

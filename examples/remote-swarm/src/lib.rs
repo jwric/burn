@@ -39,8 +39,13 @@ pub use roster::{Roster, RosterEntry};
 pub use swarm::{Swarm, SwarmConfig};
 pub use ticket::{JoinTicket, TicketError, topic_from_label};
 
+/// Re-exported for building a [`PeerAdvert`]: the connection material a client dials.
+pub use burn_remote::RemoteTicket;
 /// Re-exported so a compute peer composing its own router can accept the gossip protocol alongside
 /// [`burn_remote::BURN_REMOTE_ALPN`] on one endpoint.
 pub use iroh_gossip::net::GOSSIP_ALPN;
+/// Re-exported so a compute peer can spawn the gossip protocol on its endpoint without depending on
+/// `iroh-gossip` directly.
+pub use iroh_gossip::net::Gossip;
 /// Re-exported so callers can name the gossip topic without an explicit `iroh-gossip` dependency.
 pub use iroh_gossip::proto::TopicId;

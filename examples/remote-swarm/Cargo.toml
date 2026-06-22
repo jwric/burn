@@ -20,15 +20,26 @@ burn-remote = { workspace = true, features = ["iroh"] }
 iroh = { workspace = true }
 # Pub/sub over the same iroh endpoint. Tracks iroh's releases; 0.101 depends on iroh "1".
 iroh-gossip = { version = "0.101", features = ["net"] }
+# Cross-target task spawning + timers (tokio on native, spawn_local in the browser).
+n0-future = "0.3"
+# Portable monotonic clock (std::time::Instant on native, performance.now() on wasm).
+web-time = "1"
 
 serde = { workspace = true, features = ["derive", "std"] }
 rmp-serde = { workspace = true }
 bytes = { workspace = true }
 data-encoding = { workspace = true }
-blake3 = "1"
+blake3 = { version = "1", default-features = false }
 futures-util = { workspace = true }
 anyhow = "1"
-
-tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "sync", "signal"] }
 tracing = { workspace = true }
+# The library only needs the mpsc channel from tokio, which keeps it wasm-compatible.
+tokio = { workspace = true, features = ["sync"] }
+
+# The native demo binary needs a real runtime, timers, and signal handling; the library does not, so
+# these stay off the wasm build.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "signal"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+# The seed renders the join link as a scannable terminal QR code.
+qr2term = "0.3"
