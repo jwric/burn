@@ -87,13 +87,13 @@ suspends the tab — keep this one in front to keep contributing.
 2. Serve the directory and open it:
 
    ```sh
-   ./run-server.sh   # http://localhost:8000
+   ./run-server.sh   # http://localhost:8001
    ```
 
-3. Start a swarm seed and get a launch link + QR (serving the page at, say, `http://localhost:8000`):
+3. Start a swarm seed and get a launch link + QR (serving the page at, say, `http://localhost:8001`):
 
    ```sh
-   cargo run -p remote-swarm --bin swarm-demo -- seed burn-web http://localhost:8000
+   cargo run -p remote-swarm --bin swarm-demo -- seed burn-web http://localhost:8001
    ```
 
    Open the printed link (or scan the QR) — the page reads the ticket from its `#…` fragment, joins

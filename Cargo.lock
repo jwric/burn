@@ -9777,6 +9777,7 @@ dependencies = [
  "anyhow",
  "burn",
  "iroh",
+ "qr2term",
  "remote-swarm",
  "tokio",
  "tracing",

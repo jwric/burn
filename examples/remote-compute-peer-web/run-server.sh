@@ -6,5 +6,5 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
-echo "Running local python HTTP server on port 8000 ..."
+echo "Running local python HTTP server on port 8001 ..."
 python3 -m http.server 8001

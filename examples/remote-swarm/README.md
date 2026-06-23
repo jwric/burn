@@ -3,6 +3,8 @@
 Gossip-based **peer discovery** for a Burn Remote compute swarm — the control plane that turns the
 existing point-to-point remote backend into a scan-to-join GPU pool.
 
+> Putting on the full scan-a-QR demo? See [`OFFICE_DEMO.md`](./OFFICE_DEMO.md) for the runbook.
+
 `burn-remote` already provides the **data plane**: bind an Iroh endpoint, hand a client a
 `RemoteTicket`, and tensor operations stream over a direct QUIC connection. What it deliberately
 leaves to the application is *discovery*: "who is out there to dial?". This crate fills that gap with

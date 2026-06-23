@@ -6,6 +6,13 @@
 //! cargo run -p remote-swarm-cluster -- --local serve <ticket> bob
 //! cargo run -p remote-swarm-cluster -- --local client <ticket>
 //! ```
+//!
+//! A seed may take a landing URL (the browser-peer page); it then prints a `<url>#<ticket>` QR for
+//! phones to scan and join as GPU peers:
+//!
+//! ```sh
+//! cargo run -p remote-swarm-cluster -- serve burn-office laptop https://peer.example.com
+//! ```
 
 use std::time::Duration;
 
@@ -35,11 +42,12 @@ async fn main() -> Result<()> {
 
     match args.next().unwrap_or_default().as_str() {
         "serve" => {
-            let target = args
-                .next()
-                .context("usage: swarm-cluster [--local] serve <label-or-ticket> [name]")?;
+            let target = args.next().context(
+                "usage: swarm-cluster [--local] serve <label-or-ticket> [name] [landing-url]",
+            )?;
             let name = args.next().unwrap_or_else(|| "peer".to_string());
-            run_serve(&target, &name, local).await
+            let landing = args.next();
+            run_serve(&target, &name, landing.as_deref(), local).await
         }
         "client" => {
             let target = args
@@ -80,7 +88,7 @@ async fn warm_bootstrap(endpoint: &Endpoint, bootstrap: &[EndpointAddr]) {
     }
 }
 
-async fn run_serve(target: &str, name: &str, local: bool) -> Result<()> {
+async fn run_serve(target: &str, name: &str, landing: Option<&str>, local: bool) -> Result<()> {
     let (topic, bootstrap) = parse_target(target);
     let endpoint =
         build_endpoint(local, vec![BURN_REMOTE_ALPN.to_vec(), GOSSIP_ALPN.to_vec()]).await?;
@@ -113,6 +121,14 @@ async fn run_serve(target: &str, name: &str, local: bool) -> Result<()> {
         let ticket = JoinTicket::new(topic, vec![endpoint.addr()]).encode();
         println!("\n[{name}] seed peer serving on flex.");
         println!("JOIN TICKET (give to other peers and the client):\n{ticket}\n");
+        if let Some(landing) = landing {
+            let link = format!("{}#{ticket}", landing.trim_end_matches('#'));
+            println!("SCAN to donate a phone GPU ({link}):\n");
+            if let Err(err) = qr2term::print_qr(&link) {
+                tracing::warn!("could not render QR: {err}");
+            }
+            println!();
+        }
     } else {
         println!("[{name}] serving on flex, joined the swarm.");
     }
