@@ -1,27 +1,38 @@
 //! A browser client for the Burn compute swarm: it joins the gossip topic, discovers the compute
-//! peers, fans a Mandelbrot across them (each band on a different peer, dispatched concurrently),
-//! and draws the result on a canvas. Launch with a join ticket in the URL fragment (`…/#burnswarm…`)
-//! or enter one in the UI.
+//! peers, and continuously fans an animated Mandelbrot *zoom* across them (each band on a different
+//! peer, re-dispatched every frame so peers stay busy), drawing it to a canvas. The roster is
+//! re-read each frame, so peers joining or leaving are picked up live. Launch with a join ticket in
+//! the URL fragment (`…/#burnswarm…`) or enter one in the UI.
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use burn::backend::remote::{Endpoint, RemoteNode};
 use burn::tensor::{Device, Int, Tensor};
 use eframe::egui;
 use futures_util::future::join_all;
+use iroh::EndpointId;
 use iroh::endpoint::presets;
-use remote_swarm::{GOSSIP_ALPN, JoinTicket, RosterEntry, Swarm, SwarmConfig, topic_from_label};
+use remote_swarm::{GOSSIP_ALPN, JoinTicket, Swarm, SwarmConfig, topic_from_label};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_time::Instant;
 
-const WIDTH: usize = 200;
-const BAND_H: usize = 6;
-const MAX_ITER: usize = 60;
+const WIDTH: usize = 256;
+const HEIGHT: usize = 160;
+const BAND_H: usize = 8;
+const BANDS: usize = HEIGHT / BAND_H;
 const FLOPS_PER_ITER: f64 = 10.0;
-const VIEW: (f32, f32, f32, f32) = (-2.6, 1.0, -1.2, 1.2); // xmin, xmax, ymin, ymax
+
+const CENTER: (f32, f32) = (-0.743_643_9, 0.131_825_9); // seahorse valley
+const START_HALF: f32 = 1.3;
+const MIN_HALF: f32 = 3e-5; // f32 detail floor; reset the zoom below this
+const ZOOM_PER_FRAME: f32 = 0.94;
+const BASE_ITER: f64 = 90.0;
+const ITER_PER_OCTAVE: f64 = 14.0;
+const ITER_CAP: f64 = 400.0;
 
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -51,13 +62,14 @@ pub async fn run(canvas_id: String, join: String) -> Result<(), JsValue> {
 struct Render {
     size: [usize; 2],
     counts: Vec<f32>,
+    max_iter: usize,
     bands_total: usize,
     bands_done: usize,
     attribution: Vec<String>,
     peers: Vec<String>,
     status: String,
-    start: Option<Instant>,
-    done_elapsed: Option<f64>,
+    frame: u32,
+    gflops: f64,
     error: Option<String>,
 }
 
@@ -74,7 +86,7 @@ struct ClientApp {
     shared: Rc<RefCell<Render>>,
     autostart: Option<String>,
     texture: Option<egui::TextureHandle>,
-    shown_bands: usize,
+    shown: (u32, usize),
 }
 
 impl ClientApp {
@@ -90,14 +102,14 @@ impl ClientApp {
             shared: Rc::new(RefCell::new(Render::default())),
             autostart: (!join.is_empty()).then_some(join),
             texture: None,
-            shown_bands: usize::MAX,
+            shown: (u32::MAX, usize::MAX),
         }
     }
 
     fn start(&mut self, input: String, ctx: &egui::Context) {
         *self.shared.borrow_mut() = Render::default();
         self.texture = None;
-        self.shown_bands = usize::MAX;
+        self.shown = (u32::MAX, usize::MAX);
         self.stage = Stage::Running;
         spawn_local(drive(input, self.shared.clone(), ctx.clone()));
     }
@@ -117,7 +129,7 @@ impl eframe::App for ClientApp {
                     ui.vertical_centered(|ui| {
                         ui.heading("Burn swarm client");
                         ui.label(
-                            "Fans a Mandelbrot across the swarm's compute peers and draws it.",
+                            "Continuously renders an animated Mandelbrot zoom across the swarm.",
                         );
                         ui.add_space(16.0);
                         ui.horizontal(|ui| {
@@ -142,20 +154,30 @@ impl eframe::App for ClientApp {
                 }
             }
             Stage::Running => {
-                let (error, status, size, bands_done, bands_total, peers, attribution, elapsed) = {
+                let (
+                    error,
+                    status,
+                    size,
+                    max_iter,
+                    bands_done,
+                    bands_total,
+                    peers,
+                    attribution,
+                    frame,
+                    gflops,
+                ) = {
                     let r = self.shared.borrow();
-                    let elapsed = r
-                        .done_elapsed
-                        .or_else(|| r.start.map(|s| s.elapsed().as_secs_f64()));
                     (
                         r.error.clone(),
                         r.status.clone(),
                         r.size,
+                        r.max_iter,
                         r.bands_done,
                         r.bands_total,
                         r.peers.clone(),
                         r.attribution.clone(),
-                        elapsed,
+                        r.frame,
+                        r.gflops,
                     )
                 };
 
@@ -168,18 +190,18 @@ impl eframe::App for ClientApp {
                     return;
                 }
 
-                if size[0] > 0 && bands_done != self.shown_bands {
+                if size[0] > 0 && (frame, bands_done) != self.shown {
                     let pixels: Vec<egui::Color32> = self
                         .shared
                         .borrow()
                         .counts
                         .iter()
-                        .map(|&c| color(c))
+                        .map(|&c| color(c, max_iter))
                         .collect();
                     let image = egui::ColorImage { size, pixels };
                     self.texture =
                         Some(ctx.load_texture("mandelbrot", image, egui::TextureOptions::NEAREST));
-                    self.shown_bands = bands_done;
+                    self.shown = (frame, bands_done);
                 }
 
                 egui::TopBottomPanel::top("header").show(ctx, |ui| {
@@ -188,16 +210,11 @@ impl eframe::App for ClientApp {
                         ui.separator();
                         ui.label(format!("{} peer(s)", peers.len()));
                         ui.separator();
+                        ui.label(format!("frame {frame}"));
+                        ui.separator();
+                        ui.label(format!("~{gflops:.2} GFLOP/s"));
+                        ui.separator();
                         ui.label(format!("{bands_done}/{bands_total} tiles"));
-                        if let Some(elapsed) = elapsed {
-                            let flops = bands_done as f64
-                                * (WIDTH * BAND_H * MAX_ITER) as f64
-                                * FLOPS_PER_ITER;
-                            ui.separator();
-                            ui.label(format!("~{:.2} GFLOP/s", flops / elapsed.max(1e-3) / 1e9));
-                            ui.separator();
-                            ui.label(format!("{elapsed:.1}s"));
-                        }
                     });
                 });
 
@@ -231,9 +248,7 @@ impl eframe::App for ClientApp {
                     }
                 });
 
-                if bands_total == 0 || bands_done < bands_total {
-                    ctx.request_repaint();
-                }
+                ctx.request_repaint();
             }
         }
     }
@@ -277,101 +292,159 @@ async fn drive_inner(
 
     shared.borrow_mut().status = "discovering peers…".to_string();
     ctx.request_repaint();
-
-    let peers = discover(&swarm).await;
-    if peers.is_empty() {
-        return Err("no compute peers found in the swarm".to_string());
-    }
-
-    let bands = peers.len() * 6;
-    let height = bands * BAND_H;
-    {
-        let mut r = shared.borrow_mut();
-        r.size = [WIDTH, height];
-        r.counts = vec![0.0; WIDTH * height];
-        r.bands_total = bands;
-        r.peers = peers
-            .iter()
-            .map(|p| {
-                format!(
-                    "{} [{}]",
-                    p.advert.name.clone().unwrap_or_default(),
-                    p.advert.caps.backend
-                )
-            })
-            .collect();
-        r.attribution = (0..bands)
-            .map(|b| {
-                peers[b % peers.len()]
-                    .advert
-                    .name
-                    .clone()
-                    .unwrap_or_default()
-            })
-            .collect();
-        r.status = "rendering…".to_string();
-        r.start = Some(Instant::now());
-    }
-    ctx.request_repaint();
-
-    let mut devices = Vec::with_capacity(peers.len());
-    for peer in &peers {
-        devices.push(Device::remote_ticket_async(&node, &peer.advert.ticket, 0).await);
-    }
-
-    let (xmin, xmax, ymin, ymax) = VIEW;
-    let tiles = (0..bands).map(|band| {
-        let shared = shared.clone();
-        let ctx = ctx.clone();
-        let device = devices[band % peers.len()].clone();
-        async move {
-            let y0 = ymin + (ymax - ymin) * band as f32 / bands as f32;
-            let y1 = ymin + (ymax - ymin) * (band + 1) as f32 / bands as f32;
-            let tile = mandelbrot_tile(&device, xmin, xmax, y0, y1, WIDTH, BAND_H).await?;
-            let mut r = shared.borrow_mut();
-            let offset = band * BAND_H * WIDTH;
-            r.counts[offset..offset + tile.len()].copy_from_slice(&tile);
-            r.bands_done += 1;
-            drop(r);
-            ctx.request_repaint();
-            Ok::<(), String>(())
-        }
-    });
-
-    for result in join_all(tiles).await {
-        result?;
-    }
-
-    let mut r = shared.borrow_mut();
-    r.done_elapsed = r.start.map(|s| s.elapsed().as_secs_f64());
-    r.status = "done ✓".to_string();
-    drop(r);
-    ctx.request_repaint();
-    Ok(())
-}
-
-async fn discover(swarm: &Swarm) -> Vec<RosterEntry> {
-    for _ in 0..50 {
+    for _ in 0..40 {
         if swarm.peer_count() > 0 {
             break;
         }
-        gloo_timers::future::TimeoutFuture::new(300).await;
+        sleep_ms(300).await;
     }
-    gloo_timers::future::TimeoutFuture::new(2000).await;
-    let mut roster = swarm.roster();
-    roster.sort_by_key(|entry| entry.advert.caps.backend != "wgpu"); // GPU peers first
-    roster
+    sleep_ms(1500).await;
+
+    {
+        let mut r = shared.borrow_mut();
+        r.size = [WIDTH, HEIGHT];
+        r.counts = vec![0.0; WIDTH * HEIGHT];
+    }
+
+    let mut devices: HashMap<EndpointId, Device> = HashMap::new();
+    let mut y_half = START_HALF;
+    let mut frame: u32 = 0;
+    let mut ema = 0.0f64;
+
+    loop {
+        let mut roster = swarm.roster();
+        roster.sort_by_key(|entry| entry.advert.caps.backend != "wgpu"); // GPU peers first
+        if roster.is_empty() {
+            {
+                let mut r = shared.borrow_mut();
+                r.status = "waiting for peers…".to_string();
+                r.peers.clear();
+                r.bands_total = 0;
+            }
+            ctx.request_repaint();
+            sleep_ms(500).await;
+            continue;
+        }
+
+        // Keep one pooled remote device per live peer; drop devices for peers that have left.
+        let live: HashSet<EndpointId> = roster.iter().map(|e| e.advert.endpoint_id()).collect();
+        devices.retain(|id, _| live.contains(id));
+        let missing: Vec<(EndpointId, _)> = roster
+            .iter()
+            .filter(|peer| !devices.contains_key(&peer.advert.endpoint_id()))
+            .map(|peer| (peer.advert.endpoint_id(), peer.advert.ticket.clone()))
+            .collect();
+        for (id, ticket) in missing {
+            let device = Device::remote_ticket_async(&node, &ticket, 0).await;
+            devices.insert(id, device);
+        }
+
+        let octaves = (START_HALF / y_half).max(1.0).log2() as f64;
+        let max_iter = (BASE_ITER + octaves * ITER_PER_OCTAVE).min(ITER_CAP) as usize;
+        let x_half = y_half * WIDTH as f32 / HEIGHT as f32;
+        let (xmin, xmax) = (CENTER.0 - x_half, CENTER.0 + x_half);
+        let (ymin, ymax) = (CENTER.1 - y_half, CENTER.1 + y_half);
+
+        {
+            let mut r = shared.borrow_mut();
+            r.max_iter = max_iter;
+            r.frame = frame;
+            r.bands_total = BANDS;
+            r.bands_done = 0;
+            r.status = "rendering".to_string();
+            r.peers = roster
+                .iter()
+                .map(|p| {
+                    format!(
+                        "{} [{}]",
+                        p.advert.name.clone().unwrap_or_default(),
+                        p.advert.caps.backend
+                    )
+                })
+                .collect();
+            r.attribution = (0..BANDS)
+                .map(|b| {
+                    roster[b % roster.len()]
+                        .advert
+                        .name
+                        .clone()
+                        .unwrap_or_default()
+                })
+                .collect();
+        }
+
+        let t0 = Instant::now();
+        let tiles = (0..BANDS).map(|band| {
+            let shared = shared.clone();
+            let ctx = ctx.clone();
+            let device = devices[&roster[band % roster.len()].advert.endpoint_id()].clone();
+            async move {
+                let y0 = ymin + (ymax - ymin) * band as f32 / BANDS as f32;
+                let y1 = ymin + (ymax - ymin) * (band + 1) as f32 / BANDS as f32;
+                // A peer that dropped mid-frame just leaves its band stale; next frame's roster drops it.
+                let params = Tile {
+                    xmin,
+                    xmax,
+                    y0,
+                    y1,
+                    w: WIDTH,
+                    h: BAND_H,
+                    max_iter,
+                };
+                if let Ok(tile) = mandelbrot_tile(&device, params).await {
+                    let mut r = shared.borrow_mut();
+                    let offset = band * BAND_H * WIDTH;
+                    r.counts[offset..offset + tile.len()].copy_from_slice(&tile);
+                    r.bands_done += 1;
+                    drop(r);
+                    ctx.request_repaint();
+                }
+            }
+        });
+        join_all(tiles).await;
+
+        let dt = t0.elapsed().as_secs_f64().max(1e-3);
+        let rate = (WIDTH * HEIGHT * max_iter) as f64 * FLOPS_PER_ITER / dt / 1e9;
+        ema = if frame == 0 {
+            rate
+        } else {
+            0.6 * ema + 0.4 * rate
+        };
+        shared.borrow_mut().gflops = ema;
+        ctx.request_repaint();
+
+        y_half *= ZOOM_PER_FRAME;
+        if y_half < MIN_HALF {
+            y_half = START_HALF;
+        }
+        frame = frame.wrapping_add(1);
+    }
 }
 
-async fn mandelbrot_tile(
-    device: &Device,
+async fn sleep_ms(ms: u32) {
+    gloo_timers::future::TimeoutFuture::new(ms).await;
+}
+
+struct Tile {
     xmin: f32,
     xmax: f32,
     y0: f32,
     y1: f32,
     w: usize,
     h: usize,
-) -> Result<Vec<f32>, String> {
+    max_iter: usize,
+}
+
+async fn mandelbrot_tile(device: &Device, tile: Tile) -> Result<Vec<f32>, String> {
+    let Tile {
+        xmin,
+        xmax,
+        y0,
+        y1,
+        w,
+        h,
+        max_iter,
+    } = tile;
     let step_x = (xmax - xmin) / (w as f32 - 1.0);
     let step_y = (y1 - y0) / (h as f32 - 1.0);
 
@@ -390,7 +463,7 @@ async fn mandelbrot_tile(
     let mut zy = Tensor::<2>::zeros([h, w], device);
     let mut count = Tensor::<2>::zeros([h, w], device);
 
-    for _ in 0..MAX_ITER {
+    for _ in 0..max_iter {
         let zx2 = zx.clone() * zx.clone();
         let zy2 = zy.clone() * zy.clone();
         // inside |z| <= 2 (|z|^2 <= 4): 1.0 while still iterating, 0.0 once escaped
@@ -409,14 +482,13 @@ async fn mandelbrot_tile(
     Ok(data.iter::<f32>().collect())
 }
 
-fn color(count: f32) -> egui::Color32 {
-    if count >= MAX_ITER as f32 {
+fn color(count: f32, max_iter: usize) -> egui::Color32 {
+    if count >= max_iter as f32 {
         return egui::Color32::BLACK;
     }
-    let t = (count / MAX_ITER as f32).clamp(0.0, 1.0);
-    egui::Color32::from_rgb(
-        (t * t * 255.0) as u8,
-        (t * 255.0) as u8,
-        (64.0 + t * 191.0) as u8,
-    )
+    let t = (count / max_iter as f32).clamp(0.0, 1.0);
+    let r = 9.0 * (1.0 - t) * t * t * t;
+    let g = 15.0 * (1.0 - t) * (1.0 - t) * t * t;
+    let b = 8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t;
+    egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
 }

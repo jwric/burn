@@ -1,14 +1,16 @@
 # remote-swarm-client-web
 
 A **browser client** for the Burn compute swarm. It joins the gossip topic as an observer, discovers
-the compute peers from the roster ([`remote-swarm`](../remote-swarm)), and fans a Mandelbrot across
-them — each horizontal band computed on a different peer (`device_from_ticket` → ordinary Burn
-Remote, read back async), stitched into one image drawn on the canvas. The browser twin of the native
+the compute peers from the roster ([`remote-swarm`](../remote-swarm)), and continuously fans an
+**animated Mandelbrot zoom** across them — each horizontal band computed on a different peer
+(`device_from_ticket` → ordinary Burn Remote, read back async), re-dispatched every frame so the
+peers never go idle, and stitched into the image on the canvas. The browser twin of the native
 [`remote-swarm-cluster`](../remote-swarm-cluster) client.
 
 Peers are ranked GPU-first (`PeerCaps.backend`), so WebGPU phones ([`remote-compute-peer-web`](../remote-compute-peer-web))
-are preferred and CPU tabs are overflow. Bands fill in progressively as peers answer, and a side
-panel shows the roster and which peer computed which band.
+are preferred and CPU tabs are overflow. The roster is re-read each frame, so peers joining or
+leaving are picked up live (a peer that drops just loses its band that frame). The header shows the
+peer count, frame, sustained ~GFLOP/s, and tiles done; a side panel maps each band to its peer.
 
 ## Run it
 
