@@ -159,9 +159,8 @@ pub fn serve_iroh_with_telemetry(
 }
 
 /// Build the Iroh [`RouterBuilder`](burn_remote::server::RouterBuilder) hosting `device`'s backend on
-/// [`BURN_REMOTE_ALPN`](burn_remote::BURN_REMOTE_ALPN), without spawning it. The caller can register
-/// additional protocols on the same endpoint (e.g. iroh-gossip for peer discovery) before
-/// `.spawn()`.
+/// [`BURN_REMOTE_ALPN`](burn_remote::BURN_REMOTE_ALPN), without spawning — the caller registers other
+/// protocols (e.g. iroh-gossip) before `.spawn()`.
 pub fn serve_iroh_builder(
     device: DispatchDevice,
     node: burn_remote::RemoteNode,

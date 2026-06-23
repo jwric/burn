@@ -1,10 +1,9 @@
-//! The live membership table a swarm node maintains by listening to the gossip topic.
+//! The live membership table a swarm node maintains from gossip.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
 use iroh::EndpointId;
-// Portable monotonic clock: std::time::Instant on native, performance.now() in the browser.
 use web_time::Instant;
 
 use crate::message::{Load, PeerAdvert};
@@ -12,19 +11,12 @@ use crate::message::{Load, PeerAdvert};
 /// A compute peer currently known to this node.
 #[derive(Clone, Debug)]
 pub struct RosterEntry {
-    /// The peer's advertised connection material and capabilities.
     pub advert: PeerAdvert,
-    /// Most recent load report.
     pub load: Load,
-    /// When we last heard from this peer (any message).
     pub last_seen: Instant,
 }
 
 /// A set of live compute peers, aged out by a time-to-live.
-///
-/// The roster is pure bookkeeping: feed it the messages and neighbour events the gossip task
-/// observes, prune it on a timer, and read snapshots for scheduling. It does no I/O, so it is
-/// trivially testable.
 #[derive(Debug)]
 pub struct Roster {
     peers: HashMap<EndpointId, RosterEntry>,
@@ -32,7 +24,6 @@ pub struct Roster {
 }
 
 impl Roster {
-    /// Create an empty roster that forgets peers unheard from for longer than `ttl`.
     pub fn new(ttl: Duration) -> Self {
         Self {
             peers: HashMap::new(),
@@ -40,7 +31,6 @@ impl Roster {
         }
     }
 
-    /// Record an `Announce`: insert a new peer or refresh an existing one's advert.
     pub fn observe_announce(&mut self, advert: PeerAdvert, now: Instant) {
         let id = advert.endpoint_id();
         let entry = self.peers.entry(id).or_insert_with(|| RosterEntry {
@@ -52,8 +42,7 @@ impl Roster {
         entry.last_seen = now;
     }
 
-    /// Record a `Heartbeat`. Returns `false` if the peer is unknown (no advert seen yet), so the
-    /// caller can decide to request a re-announce.
+    /// Returns `false` if the peer is unknown (no advert seen yet).
     pub fn observe_heartbeat(&mut self, peer: &EndpointId, load: Load, now: Instant) -> bool {
         match self.peers.get_mut(peer) {
             Some(entry) => {
@@ -65,12 +54,11 @@ impl Roster {
         }
     }
 
-    /// Drop a peer immediately (a `Bye`, or an explicit eviction).
     pub fn remove(&mut self, peer: &EndpointId) {
         self.peers.remove(peer);
     }
 
-    /// Forget every peer unheard from for longer than the TTL. Returns the evicted ids.
+    /// Forget peers unheard from for longer than the TTL; returns the evicted ids.
     pub fn prune(&mut self, now: Instant) -> Vec<EndpointId> {
         let ttl = self.ttl;
         let expired: Vec<EndpointId> = self
@@ -85,30 +73,22 @@ impl Roster {
         expired
     }
 
-    /// Number of live peers.
     pub fn len(&self) -> usize {
         self.peers.len()
     }
 
-    /// True when no peers are known.
     pub fn is_empty(&self) -> bool {
         self.peers.is_empty()
     }
 
-    /// True if `peer` is currently in the roster.
     pub fn contains(&self, peer: &EndpointId) -> bool {
         self.peers.contains_key(peer)
     }
 
-    /// Snapshot of every live peer, for dashboards or scheduling.
     pub fn snapshot(&self) -> Vec<RosterEntry> {
         self.peers.values().cloned().collect()
     }
 
-    /// Pick the least-loaded peer (fewest sessions, then lowest ops/sec). `None` if empty.
-    ///
-    /// A minimal scheduling primitive — for a true swarm, clients can instead map work to peers by
-    /// rendezvous-hashing over [`snapshot`](Self::snapshot) so assignment needs no coordinator.
     pub fn pick_least_loaded(&self) -> Option<RosterEntry> {
         self.peers
             .values()
@@ -136,7 +116,6 @@ mod tests {
         roster.observe_announce(advert(2, "b"), now);
         assert_eq!(roster.len(), 2);
 
-        // Re-announcing the same peer refreshes rather than duplicates.
         roster.observe_announce(advert(1, "a-renamed"), now);
         assert_eq!(roster.len(), 2);
         let entry = roster
@@ -158,10 +137,10 @@ mod tests {
             sessions: 7,
             ops_per_sec: 1.0,
         };
-        assert!(!roster.observe_heartbeat(&id, load, now)); // unknown -> false
+        assert!(!roster.observe_heartbeat(&id, load, now));
 
         roster.observe_announce(a, now);
-        assert!(roster.observe_heartbeat(&id, load, now)); // known -> true
+        assert!(roster.observe_heartbeat(&id, load, now));
         assert_eq!(roster.snapshot()[0].load.sessions, 7);
     }
 
@@ -172,7 +151,6 @@ mod tests {
         let start = Instant::now();
 
         roster.observe_announce(advert(1, "old"), start);
-        // A fresh heartbeat keeps the second peer alive past the first's expiry.
         let later = start + Duration::from_secs(8);
         roster.observe_announce(advert(2, "fresh"), later);
 

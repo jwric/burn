@@ -62,19 +62,8 @@ pub fn serve_with_telemetry(
 }
 
 /// Build the Iroh [`RouterBuilder`] pre-loaded with the Burn Remote compute protocol, without
-/// spawning it.
-///
-/// Use this to share one endpoint between Burn Remote and other Iroh protocols — e.g. iroh-gossip
-/// for peer discovery. Register the extra protocols on the returned builder, then call `.spawn()`:
-///
-/// ```rust,ignore
-/// let gossip = Gossip::builder().spawn(endpoint.clone());
-/// let router = serve_builder(device, node.clone())
-///     .accept(GOSSIP_ALPN, gossip.clone())
-///     .spawn();
-/// ```
-///
-/// Works in the browser and natively.
+/// spawning — register other protocols (e.g. iroh-gossip) on it, then call `.spawn()`. Works in the
+/// browser and natively.
 pub fn serve_builder(device: Device, node: RemoteNode) -> RouterBuilder {
     burn_dispatch::remote_server::serve_iroh_builder(device.into_dispatch(), node)
 }

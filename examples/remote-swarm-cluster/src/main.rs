@@ -1,18 +1,8 @@
-//! A complete native Burn compute swarm in one binary.
-//!
-//! * `serve` brings up a compute peer: it serves tensor ops on the Flex CPU backend *and* joins the
-//!   gossip swarm (compute + discovery on one Iroh endpoint), advertising its `RemoteTicket`.
-//! * `client` joins the swarm as an observer, discovers the serving peers from the roster, and fans
-//!   a batch of work across them — here a Mandelbrot set, split into horizontal bands, each computed
-//!   on a different peer and stitched back into one ASCII image.
-//!
-//! It's the native twin of the browser peer ([`remote-compute-peer-web`]) and the proof of the whole
-//! discover → dial → compute → collect loop. Run it on one host with `--local` (relay-free):
+//! A native Burn compute swarm in one binary: `serve` runs a compute peer that joins the swarm,
+//! `client` discovers peers and fans a Mandelbrot across them. The native twin of the browser peer.
 //!
 //! ```sh
-//! # a seed peer (no ticket arg) prints a JOIN TICKET
-//! cargo run -p remote-swarm-cluster -- --local serve burn-web alice
-//! # more peers + the client take that ticket
+//! cargo run -p remote-swarm-cluster -- --local serve burn-web alice   # seed; prints a ticket
 //! cargo run -p remote-swarm-cluster -- --local serve <ticket> bob
 //! cargo run -p remote-swarm-cluster -- --local client <ticket>
 //! ```
@@ -63,7 +53,7 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Bind an endpoint advertising `alpns`. `--local` uses iroh's relay-free preset (direct paths only).
+/// `--local` uses iroh's relay-free `Minimal` preset (direct paths only); otherwise N0 + relays.
 async fn build_endpoint(local: bool, alpns: Vec<Vec<u8>>) -> Result<Endpoint> {
     if local {
         Ok(Endpoint::builder(presets::Minimal)
@@ -77,8 +67,6 @@ async fn build_endpoint(local: bool, alpns: Vec<Vec<u8>>) -> Result<Endpoint> {
     }
 }
 
-/// Resolve a `serve`/`client` target: a `burnswarm…` join ticket, or a plain topic label (no
-/// bootstrap — i.e. this node is the seed).
 fn parse_target(input: &str) -> (TopicId, Vec<EndpointAddr>) {
     match JoinTicket::decode(input) {
         Ok(ticket) => (ticket.topic(), ticket.bootstrap().to_vec()),
@@ -86,7 +74,6 @@ fn parse_target(input: &str) -> (TopicId, Vec<EndpointAddr>) {
     }
 }
 
-/// Teach the endpoint the bootstrap addresses so the gossip join doesn't wait on discovery.
 async fn warm_bootstrap(endpoint: &Endpoint, bootstrap: &[EndpointAddr]) {
     for addr in bootstrap {
         let _ = endpoint.connect(addr.clone(), GOSSIP_ALPN).await;
@@ -99,7 +86,6 @@ async fn run_serve(target: &str, name: &str, local: bool) -> Result<()> {
         build_endpoint(local, vec![BURN_REMOTE_ALPN.to_vec(), GOSSIP_ALPN.to_vec()]).await?;
     let node = RemoteNode::from_endpoint(endpoint.clone());
 
-    // One endpoint, one router: Burn Remote compute (Flex CPU) + iroh-gossip discovery.
     let gossip = Gossip::builder().spawn(endpoint.clone());
     let _router = serve_builder(Device::flex(), node.clone())
         .accept(GOSSIP_ALPN, gossip.clone())
@@ -148,8 +134,6 @@ async fn run_serve(target: &str, name: &str, local: bool) -> Result<()> {
 
 async fn run_client(target: &str, local: bool) -> Result<()> {
     let (topic, bootstrap) = parse_target(target);
-    // The client only observes gossip and dials peers; it doesn't serve, so it advertises no ALPN
-    // beyond gossip.
     let endpoint = build_endpoint(local, vec![GOSSIP_ALPN.to_vec()]).await?;
     warm_bootstrap(&endpoint, &bootstrap).await;
     let node = RemoteNode::from_endpoint(endpoint.clone());
@@ -175,13 +159,10 @@ async fn run_client(target: &str, local: bool) -> Result<()> {
         );
     }
 
-    // The blocking remote tensor ops run fine on the multi-threaded runtime (the iroh I/O uses other
-    // worker threads), matching the native client pattern in `p2p-remote-training`.
+    // Blocking remote tensor ops are fine on the multi-threaded runtime (iroh I/O uses other workers).
     render_swarm_mandelbrot(&node, &peers)
 }
 
-/// Wait for at least one peer, then a short grace period to let the rest of the swarm announce.
-/// Returns the roster with GPU peers ranked first.
 async fn discover_peers(swarm: &Swarm, timeout: Duration) -> Vec<RosterEntry> {
     let start = std::time::Instant::now();
     while swarm.peer_count() == 0 {
@@ -192,24 +173,22 @@ async fn discover_peers(swarm: &Swarm, timeout: Duration) -> Vec<RosterEntry> {
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
     let mut roster = swarm.roster();
-    // Prefer GPU (wgpu) peers; CPU (flex) tabs are the fallback/overflow.
-    roster.sort_by_key(|entry| entry.advert.caps.backend != "wgpu");
+    roster.sort_by_key(|entry| entry.advert.caps.backend != "wgpu"); // GPU peers first
     roster
 }
 
-const VIEW: (f32, f32, f32, f32) = (-2.6, 1.0, -1.2, 1.2); // (xmin, xmax, ymin, ymax)
+const VIEW: (f32, f32, f32, f32) = (-2.6, 1.0, -1.2, 1.2); // xmin, xmax, ymin, ymax
 const WIDTH: usize = 100;
 const BAND_H: usize = 5;
 const MAX_ITER: usize = 60;
 
-/// Fan a Mandelbrot image across the swarm: each horizontal band is computed on a different peer,
-/// then stitched back together and rendered as ASCII. Verifies one band against a local computation.
+/// Fan a Mandelbrot across the swarm — each band on a different peer — and render it as ASCII,
+/// verifying band 0 against a local recompute.
 fn render_swarm_mandelbrot(node: &RemoteNode, peers: &[RosterEntry]) -> Result<()> {
     let (xmin, xmax, ymin, ymax) = VIEW;
     let bands = peers.len() * 3;
     let height = bands * BAND_H;
 
-    // One remote device per peer (connections are pooled, so reuse them across bands).
     let devices: Vec<Device> = peers
         .iter()
         .map(|peer| Device::remote_ticket(node, &peer.advert.ticket, 0))
@@ -227,7 +206,6 @@ fn render_swarm_mandelbrot(node: &RemoteNode, peers: &[RosterEntry]) -> Result<(
         who.push(peers[peer].advert.name.as_deref().unwrap_or("?"));
     }
 
-    // Hard correctness check: recompute band 0 locally on Flex and compare.
     let (y0, y1) = band_bounds(ymin, ymax, 0, bands);
     let local = mandelbrot_tile(&Device::flex(), xmin, xmax, y0, y1, WIDTH, BAND_H);
     let max_diff = local
@@ -268,8 +246,7 @@ fn band_bounds(ymin: f32, ymax: f32, band: usize, bands: usize) -> (f32, f32) {
     (y0, y1)
 }
 
-/// Compute Mandelbrot escape counts for a `w × h` tile covering `[xmin,xmax] × [y0,y1]`, as Burn
-/// tensor ops on `device`. Returns row-major escape counts in `[0, MAX_ITER]`.
+/// Mandelbrot escape counts for a `w × h` tile, as Burn tensor ops on `device`.
 fn mandelbrot_tile(
     device: &Device,
     xmin: f32,
@@ -282,7 +259,6 @@ fn mandelbrot_tile(
     let step_x = (xmax - xmin) / (w as f32 - 1.0);
     let step_y = (y1 - y0) / (h as f32 - 1.0);
 
-    // cx: [h, w] real parts, cy: [h, w] imaginary parts (broadcast from a row / column vector).
     let xs = Tensor::<1, Int>::arange(0..w as i64, device)
         .float()
         .mul_scalar(step_x)
@@ -301,7 +277,7 @@ fn mandelbrot_tile(
     for _ in 0..MAX_ITER {
         let zx2 = zx.clone() * zx.clone();
         let zy2 = zy.clone() * zy.clone();
-        // 1.0 where the point is still inside |z| <= 2, 0.0 once it has escaped.
+        // inside |z| <= 2 (|z|^2 <= 4): 1.0 while still iterating, 0.0 once escaped
         let inside = (zx2.clone() + zy2.clone()).lower_equal_elem(4.0).float();
         count = count + inside;
         let next_zx = zx2 - zy2 + cx.clone();

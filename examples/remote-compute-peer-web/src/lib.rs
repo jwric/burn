@@ -1,11 +1,6 @@
-//! A Burn compute peer that runs in the browser and joins a gossip *swarm*: it brings up a WebGPU
-//! device (or falls back to the CPU when WebGPU is unavailable), serves tensor operations to remote
-//! clients over Iroh, advertises itself on a shared gossip topic so clients can discover it, and
-//! renders a live egui telemetry dashboard.
-//!
-//! The page can be launched with a join ticket in the URL fragment (`…/#burnswarm…`, e.g. from a
-//! scanned QR code); it then joins that swarm automatically. Without one, enter a topic label or
-//! ticket in the UI.
+//! A Burn compute peer that runs in the browser: it serves tensor ops on WebGPU (or a CPU fallback)
+//! over Iroh and joins a gossip swarm so clients can discover it. Launch with a join ticket in the
+//! URL fragment (`…/#burnswarm…`, e.g. from a scanned QR) to auto-join, or enter one in the UI.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -33,10 +28,8 @@ pub fn start() {
     console_error_panic_hook::set_once();
 }
 
-/// Mount the peer dashboard onto the canvas with the given element id.
-///
-/// `join` is an optional join ticket (or topic label) taken from the page URL fragment; when
-/// non-empty the peer starts serving and joins that swarm immediately.
+/// Mount the peer onto the canvas; `join` is an optional ticket/topic from the URL fragment that
+/// auto-starts the peer when non-empty.
 #[wasm_bindgen]
 pub async fn run(canvas_id: String, join: String) -> Result<(), JsValue> {
     let canvas = web_sys::window()
@@ -77,7 +70,6 @@ enum Stage {
 struct PeerApp {
     stage: Option<Stage>,
     pending: Rc<RefCell<Option<Result<Started, String>>>>,
-    // A join ticket from the URL fragment; consumed on the first frame to auto-start.
     autostart: Option<String>,
 }
 
@@ -104,7 +96,6 @@ impl eframe::App for PeerApp {
             });
         }
 
-        // A ticket arrived in the URL (e.g. a scanned QR) — start serving without a click.
         if let Some(input) = self.autostart.take() {
             self.stage = Some(Stage::Starting);
             spawn_local(startup(input, self.pending.clone()));
@@ -171,7 +162,6 @@ impl eframe::App for PeerApp {
                     });
                 });
                 started.dashboard.update(ctx, frame);
-                // Keep the roster panel fresh even when compute is idle.
                 ctx.request_repaint();
             }
         }
@@ -183,11 +173,8 @@ async fn startup(input: String, pending: Rc<RefCell<Option<Result<Started, Strin
     *pending.borrow_mut() = Some(result);
 }
 
-/// Whether the browser exposes a usable WebGPU adapter.
-///
-/// This requests an adapter and checks it resolves to a real object — not just that `navigator.gpu`
-/// exists. `Device::wgpu_async` panics *unrecoverably* in wasm when no adapter is available, so this
-/// gate runs first to choose the CPU fallback instead of crashing the tab.
+/// Whether the browser exposes a usable WebGPU adapter. `Device::wgpu_async` panics unrecoverably in
+/// wasm when there's no adapter, so this gate picks the CPU fallback instead of crashing the tab.
 async fn webgpu_available() -> bool {
     let Some(window) = web_sys::window() else {
         return false;
@@ -219,22 +206,17 @@ async fn webgpu_available() -> bool {
 }
 
 async fn build_peer(input: &str) -> Result<Started, String> {
-    // Prefer WebGPU (the device's GPU); fall back to the portable Flex CPU backend on browsers
-    // without WebGPU (older Safari/Firefox, or an insecure context).
     let (device, backend) = if webgpu_available().await {
         (Device::wgpu_async(Default::default()).await, "wgpu")
     } else {
         (Device::flex(), "flex")
     };
 
-    // The input is either a `burnswarm…` join ticket (scanned QR) or a plain topic label.
     let (topic, bootstrap): (TopicId, Vec<EndpointAddr>) = match JoinTicket::decode(input) {
         Ok(ticket) => (ticket.topic(), ticket.bootstrap().to_vec()),
         Err(_) => (topic_from_label(input), Vec::new()),
     };
 
-    // A swarm peer keeps its own random identity (many peers share a topic) and serves both the
-    // compute protocol and the gossip control protocol on one endpoint.
     let endpoint = Endpoint::builder(presets::N0)
         .alpns(vec![BURN_REMOTE_ALPN.to_vec(), GOSSIP_ALPN.to_vec()])
         .bind()
@@ -244,21 +226,16 @@ async fn build_peer(input: &str) -> Result<Started, String> {
     let node = RemoteNode::from_endpoint(endpoint.clone());
     let (probe, subscription) = TelemetryProbe::channel(8192);
 
-    // One endpoint, one router, two protocols: Burn Remote (tensors) + iroh-gossip (discovery).
     let gossip = Gossip::builder().spawn(endpoint.clone());
     let router = serve_builder_with_telemetry(device, node.clone(), probe)
         .accept(GOSSIP_ALPN, gossip.clone())
         .spawn();
 
-    // Wait until a relay address is known, then learn the bootstrap peers so the gossip join
-    // doesn't stall on discovery.
     endpoint.online().await;
     for addr in &bootstrap {
         let _ = endpoint.connect(addr.clone(), GOSSIP_ALPN).await;
     }
 
-    // Advertise how to reach this tab's compute device, including which backend it runs so clients
-    // can prefer GPU peers.
     let advert = PeerAdvert::new(
         RemoteTicket::new(endpoint.addr(), Vec::new()),
         Some(format!("browser · {backend} · {}", short_id(&node))),
