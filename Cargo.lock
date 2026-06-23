@@ -9754,6 +9754,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "remote-swarm-client-web"
+version = "0.22.0-pre.1"
+dependencies = [
+ "burn",
+ "console_error_panic_hook",
+ "eframe",
+ "gloo-timers",
+ "iroh",
+ "remote-swarm",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "remote-swarm-cluster"
 version = "0.22.0-pre.1"
 dependencies = [
