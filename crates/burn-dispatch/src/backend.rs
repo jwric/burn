@@ -12,7 +12,7 @@ use alloc::vec;
 
 #[cfg(feature = "autodiff")]
 use burn_backend::distributed::{DistributedParamId, DistributedParams};
-use burn_backend::{AutodiffBackend, Backend, BackendTypes, DType, ExecutionError};
+use burn_backend::{AutodiffBackend, Backend, BackendTypes, DType, ExecutionError, TensorMetadata};
 
 #[cfg(feature = "autodiff")]
 use alloc::boxed::Box;

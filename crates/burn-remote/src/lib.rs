@@ -56,7 +56,7 @@ mod __client {
     /// `BackendIr`, call [`server::start_websocket`] directly with the
     /// concrete backend type parameter.
     #[cfg(not(feature = "fusion"))]
-    pub type RemoteBackend = BackendRouter<RemoteChannel<<RemoteProtocol as Protocol>::Client>>;
+    pub type RemoteBackend = BackendRouter<RemoteChannel>;
 
     /// With the `fusion` feature enabled, the remote backend is wrapped in
     /// [`Fusion`](burn_fusion::Fusion) — exactly like the CubeCL backends — so recurring groups of
@@ -64,7 +64,7 @@ mod __client {
     /// (e.g. a model block per step) over the network once instead of every step.
     #[cfg(feature = "fusion")]
     pub type RemoteBackend =
-        burn_fusion::Fusion<BackendRouter<RemoteChannel<<RemoteProtocol as Protocol>::Client>>>;
+        burn_fusion::Fusion<BackendRouter<RemoteChannel>>;
 
     pub use client::RemoteDevice;
 }
@@ -436,14 +436,13 @@ mod tests {
 
 #[cfg(all(test, feature = "fusion", feature = "server"))]
 mod fusion_tests {
-    use crate::{RemoteBackend, RemoteDevice, client::RemoteChannel, shared::RemoteProtocol};
+    use crate::{RemoteBackend, RemoteDevice, client::RemoteChannel};
     use burn_backend::{Backend, Shape, TensorData};
-    use burn_communication::Protocol;
     use burn_router::BackendRouter;
 
     // `RemoteBackend` is `Fusion<PlainRemote>` under the `fusion` feature; `PlainRemote` is the
     // unwrapped router backend, used as the reference to compare against.
-    type PlainRemote = BackendRouter<RemoteChannel<<RemoteProtocol as Protocol>::Client>>;
+    type PlainRemote = BackendRouter<RemoteChannel>;
 
     fn input() -> TensorData {
         TensorData::from([[1.0f32, 2.0, 3.0], [4.0, 5.0, 6.0]])

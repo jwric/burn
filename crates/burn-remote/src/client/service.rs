@@ -528,7 +528,7 @@ fn connect_error<E: std::fmt::Debug>(route: &str, peer: &PeerAddr, err: &E) -> S
     )
 }
 
-impl<C: ProtocolClient> RemoteService<C> {
+impl RemoteService {
     /// Buffer a fire-and-forget op. The buffer is flushed automatically once it reaches the
     /// configured flush threshold.
     pub fn register_op(&mut self, stream_id: StreamId, op: OperationIr) {
