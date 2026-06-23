@@ -35,7 +35,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use burn_communication::{Protocol, external_comm::ExternalCommService};
 use burn_ir::{BackendIr, GraphId};
 use burn_router::{Graph, TensorInterpreter};
 use burn_std::id::StreamId;

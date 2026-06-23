@@ -1,5 +1,4 @@
 use burn_backend::{DTypeUsageSet, ExecutionError, TensorData};
-use burn_communication::{Address, external_comm::TensorTransferId};
 use burn_ir::{GraphBindings, GraphId, OperationIr, TensorId, TensorIr};
 use burn_std::{
     DType, DeviceSettings,
