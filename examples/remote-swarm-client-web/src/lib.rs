@@ -391,13 +391,18 @@ async fn drive_inner(
                     h: BAND_H,
                     max_iter,
                 };
-                if let Ok(tile) = mandelbrot_tile(&device, params).await {
-                    let mut r = shared.borrow_mut();
-                    let offset = band * BAND_H * WIDTH;
-                    r.counts[offset..offset + tile.len()].copy_from_slice(&tile);
-                    r.bands_done += 1;
-                    drop(r);
-                    ctx.request_repaint();
+                match mandelbrot_tile(&device, params).await {
+                    Ok(tile) => {
+                        let mut r = shared.borrow_mut();
+                        let offset = band * BAND_H * WIDTH;
+                        r.counts[offset..offset + tile.len()].copy_from_slice(&tile);
+                        r.bands_done += 1;
+                        drop(r);
+                        ctx.request_repaint();
+                    }
+                    Err(err) => web_sys::console::warn_1(
+                        &format!("band {band} read failed: {err}").into(),
+                    ),
                 }
             }
         });
@@ -468,11 +473,15 @@ async fn mandelbrot_tile(device: &Device, tile: Tile) -> Result<Vec<f32>, String
         let zy2 = zy.clone() * zy.clone();
         // inside |z| <= 2 (|z|^2 <= 4): 1.0 while still iterating, 0.0 once escaped
         let inside = (zx2.clone() + zy2.clone()).lower_equal_elem(4.0).float();
-        count = count + inside;
+        count = count + inside.clone();
         let next_zx = zx2 - zy2 + cx.clone();
         let next_zy = (zx.clone() * zy.clone()).mul_scalar(2.0) + cy.clone();
-        zx = next_zx;
-        zy = next_zy;
+        // Freeze escaped points so |z| can't run away to inf/NaN. Counts are unaffected (escaped
+        // points already stopped counting); it keeps `<= 4.0` well-defined on backends that mishandle
+        // NaN comparisons (some mobile WebGPU drivers), which would otherwise paint every pixel black.
+        let escaped = inside.clone().mul_scalar(-1.0).add_scalar(1.0);
+        zx = next_zx * inside.clone() + zx * escaped.clone();
+        zy = next_zy * inside + zy * escaped;
     }
 
     let data = count

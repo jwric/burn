@@ -10,7 +10,7 @@ use burn::backend::remote::{Endpoint, RemoteNode};
 use burn::server::{
     BURN_REMOTE_ALPN, Router, serve_builder_with_telemetry, telemetry::TelemetryProbe,
 };
-use burn::tensor::Device;
+use burn::tensor::{Device, Int, Tensor};
 use eframe::egui;
 use iroh::EndpointAddr;
 use iroh::endpoint::presets;
@@ -205,9 +205,33 @@ async fn webgpu_available() -> bool {
     }
 }
 
+/// Run a tiny known computation and read it back. Some mobile WebGPU drivers expose a usable adapter
+/// but then miscompute or fail the readback — serving black tiles to clients. A peer that can't
+/// reproduce a trivial result here is better off on the CPU backend.
+async fn backend_is_correct(device: &Device) -> bool {
+    let n = 64usize;
+    let grid = Tensor::<1, Int>::arange(0..n as i64, device)
+        .float()
+        .reshape([1, n])
+        .expand([n, n]);
+    let Ok(data) = grid.sum().into_data_async().await else {
+        return false;
+    };
+    // n rows each summing 0..n: 64 × (63·64/2) = 129_024, integer-exact in f32.
+    matches!(data.iter::<f32>().next(), Some(sum) if (sum - 129_024.0).abs() < 0.5)
+}
+
 async fn build_peer(input: &str) -> Result<Started, String> {
     let (device, backend) = if webgpu_available().await {
-        (Device::wgpu_async(Default::default()).await, "wgpu")
+        let device = Device::wgpu_async(Default::default()).await;
+        if backend_is_correct(&device).await {
+            (device, "wgpu")
+        } else {
+            web_sys::console::warn_1(
+                &"WebGPU self-check failed; serving on the CPU (flex) backend instead.".into(),
+            );
+            (Device::flex(), "flex")
+        }
     } else {
         (Device::flex(), "flex")
     };

@@ -295,11 +295,14 @@ fn mandelbrot_tile(
         let zy2 = zy.clone() * zy.clone();
         // inside |z| <= 2 (|z|^2 <= 4): 1.0 while still iterating, 0.0 once escaped
         let inside = (zx2.clone() + zy2.clone()).lower_equal_elem(4.0).float();
-        count = count + inside;
+        count = count + inside.clone();
         let next_zx = zx2 - zy2 + cx.clone();
         let next_zy = (zx.clone() * zy.clone()).mul_scalar(2.0) + cy.clone();
-        zx = next_zx;
-        zy = next_zy;
+        // Freeze escaped points so |z| can't run away to inf/NaN (keeps `<= 4.0` well-defined on
+        // backends that mishandle NaN comparisons); counts are unaffected.
+        let escaped = inside.clone().mul_scalar(-1.0).add_scalar(1.0);
+        zx = next_zx * inside.clone() + zx * escaped.clone();
+        zy = next_zy * inside + zy * escaped;
     }
 
     count.into_data().to_vec::<f32>().expect("f32 tile data")
