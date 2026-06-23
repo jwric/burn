@@ -9760,12 +9760,14 @@ dependencies = [
  "burn",
  "console_error_panic_hook",
  "eframe",
+ "futures-util",
  "gloo-timers",
  "iroh",
  "remote-swarm",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-time",
 ]
 
 [[package]]

@@ -22,6 +22,8 @@ flex = ["burn/flex"]
 burn = { workspace = true, features = ["extension", "remote-iroh"] }
 remote-swarm = { path = "../remote-swarm" }
 iroh = { workspace = true }
+futures-util = { workspace = true }
+web-time = "1"
 console_error_panic_hook = { workspace = true }
 
 eframe = { version = "0.29", default-features = false, features = [

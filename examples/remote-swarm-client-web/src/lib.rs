@@ -1,6 +1,7 @@
 //! A browser client for the Burn compute swarm: it joins the gossip topic, discovers the compute
-//! peers, fans a Mandelbrot across them (each band on a different peer), and draws the result on a
-//! canvas. Launch with a join ticket in the URL fragment (`…/#burnswarm…`) or enter one in the UI.
+//! peers, fans a Mandelbrot across them (each band on a different peer, dispatched concurrently),
+//! and draws the result on a canvas. Launch with a join ticket in the URL fragment (`…/#burnswarm…`)
+//! or enter one in the UI.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -8,15 +9,18 @@ use std::rc::Rc;
 use burn::backend::remote::{Endpoint, RemoteNode};
 use burn::tensor::{Device, Int, Tensor};
 use eframe::egui;
+use futures_util::future::join_all;
 use iroh::endpoint::presets;
 use remote_swarm::{GOSSIP_ALPN, JoinTicket, RosterEntry, Swarm, SwarmConfig, topic_from_label};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
+use web_time::Instant;
 
-const WIDTH: usize = 120;
+const WIDTH: usize = 200;
 const BAND_H: usize = 6;
 const MAX_ITER: usize = 60;
+const FLOPS_PER_ITER: f64 = 10.0;
 const VIEW: (f32, f32, f32, f32) = (-2.6, 1.0, -1.2, 1.2); // xmin, xmax, ymin, ymax
 
 #[wasm_bindgen(start)]
@@ -52,6 +56,8 @@ struct Render {
     attribution: Vec<String>,
     peers: Vec<String>,
     status: String,
+    start: Option<Instant>,
+    done_elapsed: Option<f64>,
     error: Option<String>,
 }
 
@@ -136,8 +142,11 @@ impl eframe::App for ClientApp {
                 }
             }
             Stage::Running => {
-                let snapshot = {
+                let (error, status, size, bands_done, bands_total, peers, attribution, elapsed) = {
                     let r = self.shared.borrow();
+                    let elapsed = r
+                        .done_elapsed
+                        .or_else(|| r.start.map(|s| s.elapsed().as_secs_f64()));
                     (
                         r.error.clone(),
                         r.status.clone(),
@@ -146,9 +155,9 @@ impl eframe::App for ClientApp {
                         r.bands_total,
                         r.peers.clone(),
                         r.attribution.clone(),
+                        elapsed,
                     )
                 };
-                let (error, status, size, bands_done, bands_total, peers, attribution) = snapshot;
 
                 if let Some(error) = error {
                     self.stage = Stage::Idle {
@@ -173,14 +182,28 @@ impl eframe::App for ClientApp {
                     self.shown_bands = bands_done;
                 }
 
+                egui::TopBottomPanel::top("header").show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.heading("🐝 Burn swarm");
+                        ui.separator();
+                        ui.label(format!("{} peer(s)", peers.len()));
+                        ui.separator();
+                        ui.label(format!("{bands_done}/{bands_total} tiles"));
+                        if let Some(elapsed) = elapsed {
+                            let flops = bands_done as f64
+                                * (WIDTH * BAND_H * MAX_ITER) as f64
+                                * FLOPS_PER_ITER;
+                            ui.separator();
+                            ui.label(format!("~{:.2} GFLOP/s", flops / elapsed.max(1e-3) / 1e9));
+                            ui.separator();
+                            ui.label(format!("{elapsed:.1}s"));
+                        }
+                    });
+                });
+
                 egui::SidePanel::right("info").show(ctx, |ui| {
-                    ui.heading("swarm");
                     ui.label(&status);
-                    if bands_total > 0 {
-                        ui.label(format!("bands {bands_done}/{bands_total}"));
-                    }
                     ui.separator();
-                    ui.label(format!("{} compute peer(s)", peers.len()));
                     for peer in &peers {
                         ui.label(peer);
                     }
@@ -260,7 +283,7 @@ async fn drive_inner(
         return Err("no compute peers found in the swarm".to_string());
     }
 
-    let bands = peers.len() * 4;
+    let bands = peers.len() * 6;
     let height = bands * BAND_H;
     {
         let mut r = shared.borrow_mut();
@@ -277,7 +300,17 @@ async fn drive_inner(
                 )
             })
             .collect();
+        r.attribution = (0..bands)
+            .map(|b| {
+                peers[b % peers.len()]
+                    .advert
+                    .name
+                    .clone()
+                    .unwrap_or_default()
+            })
+            .collect();
         r.status = "rendering…".to_string();
+        r.start = Some(Instant::now());
     }
     ctx.request_repaint();
 
@@ -287,23 +320,32 @@ async fn drive_inner(
     }
 
     let (xmin, xmax, ymin, ymax) = VIEW;
-    for band in 0..bands {
-        let pi = band % peers.len();
-        let y0 = ymin + (ymax - ymin) * band as f32 / bands as f32;
-        let y1 = ymin + (ymax - ymin) * (band + 1) as f32 / bands as f32;
-        let tile = mandelbrot_tile(&devices[pi], xmin, xmax, y0, y1, WIDTH, BAND_H).await?;
-        let name = peers[pi].advert.name.clone().unwrap_or_default();
+    let tiles = (0..bands).map(|band| {
+        let shared = shared.clone();
+        let ctx = ctx.clone();
+        let device = devices[band % peers.len()].clone();
+        async move {
+            let y0 = ymin + (ymax - ymin) * band as f32 / bands as f32;
+            let y1 = ymin + (ymax - ymin) * (band + 1) as f32 / bands as f32;
+            let tile = mandelbrot_tile(&device, xmin, xmax, y0, y1, WIDTH, BAND_H).await?;
+            let mut r = shared.borrow_mut();
+            let offset = band * BAND_H * WIDTH;
+            r.counts[offset..offset + tile.len()].copy_from_slice(&tile);
+            r.bands_done += 1;
+            drop(r);
+            ctx.request_repaint();
+            Ok::<(), String>(())
+        }
+    });
 
-        let mut r = shared.borrow_mut();
-        let offset = band * BAND_H * WIDTH;
-        r.counts[offset..offset + tile.len()].copy_from_slice(&tile);
-        r.bands_done += 1;
-        r.attribution.push(name);
-        drop(r);
-        ctx.request_repaint();
+    for result in join_all(tiles).await {
+        result?;
     }
 
-    shared.borrow_mut().status = "done ✓".to_string();
+    let mut r = shared.borrow_mut();
+    r.done_elapsed = r.start.map(|s| s.elapsed().as_secs_f64());
+    r.status = "done ✓".to_string();
+    drop(r);
     ctx.request_repaint();
     Ok(())
 }
