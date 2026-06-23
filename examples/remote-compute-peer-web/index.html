@@ -27,6 +27,22 @@
     <script type="module">
         import init, { run } from "./pkg/remote_compute_peer_web.js";
 
+        // Keep the screen awake while this tab serves; the lock is auto-released when the tab is
+        // hidden, so re-acquire on visibility or a tap. Best-effort: a no-op without the API.
+        let wakeLock = null;
+        async function keepAwake() {
+            try {
+                if (!wakeLock || wakeLock.released) {
+                    wakeLock = await navigator.wakeLock?.request("screen");
+                }
+            } catch (_) {}
+        }
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible") keepAwake();
+        });
+        document.addEventListener("pointerdown", keepAwake);
+        keepAwake();
+
         async function main() {
             await init();
             // A scanned QR / shared link lands here as `…/#burnswarm…`; hand the ticket to the peer

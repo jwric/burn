@@ -71,6 +71,11 @@ cannot host co-located collective or same-host-transfer participants (see the wo
 `burn-remote`). Iroh relays remain in the connection path, and the peer sees the plaintext tensor
 data and operations it computes on.
 
+The page takes a [Screen Wake Lock](https://developer.mozilla.org/en-US/docs/Web/API/Screen_Wake_Lock_API)
+so a foreground tab keeps serving without the screen dimming or locking (re-acquired after the tab is
+hidden, and a no-op where the API is unavailable). Switching to another app still backgrounds and
+suspends the tab — keep this one in front to keep contributing.
+
 ## Running it
 
 1. Build the wasm bundle:
