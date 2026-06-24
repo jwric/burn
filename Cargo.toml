@@ -238,21 +238,5 @@ cubek = { git = "https://github.com/tracel-ai/cubek", default-features = false, 
 # cubecl-zspace = { version = "0.10.0", default-features = false }
 # cubek = { version = "0.2.0", default-features = false }
 
-# Single-source every cubecl crate (including those pulled transitively by cubek) to jwric/cubecl,
-# which is the pinned tracel-ai rev plus a one-line wasm fix (gating ComputeClient::read_lazy to
-# non-wasm) needed for the browser WebGPU compute peer. Patching the whole source avoids splitting
-# the graph across two cubecl revisions, which would break feature unification.
-[patch."https://github.com/tracel-ai/cubecl"]
-cubecl = { git = "https://github.com/jwric/cubecl", rev = "4f3495293532c5c5c827bef51c2f1796b58c7119" }
-cubecl-common = { git = "https://github.com/jwric/cubecl", rev = "4f3495293532c5c5c827bef51c2f1796b58c7119" }
-cubecl-core = { git = "https://github.com/jwric/cubecl", rev = "4f3495293532c5c5c827bef51c2f1796b58c7119" }
-cubecl-ir = { git = "https://github.com/jwric/cubecl", rev = "4f3495293532c5c5c827bef51c2f1796b58c7119" }
-cubecl-macros = { git = "https://github.com/jwric/cubecl", rev = "4f3495293532c5c5c827bef51c2f1796b58c7119" }
-cubecl-macros-internal = { git = "https://github.com/jwric/cubecl", rev = "4f3495293532c5c5c827bef51c2f1796b58c7119" }
-cubecl-runtime = { git = "https://github.com/jwric/cubecl", rev = "4f3495293532c5c5c827bef51c2f1796b58c7119" }
-cubecl-std = { git = "https://github.com/jwric/cubecl", rev = "4f3495293532c5c5c827bef51c2f1796b58c7119" }
-cubecl-wgpu = { git = "https://github.com/jwric/cubecl", rev = "4f3495293532c5c5c827bef51c2f1796b58c7119" }
-cubecl-zspace = { git = "https://github.com/jwric/cubecl", rev = "4f3495293532c5c5c827bef51c2f1796b58c7119" }
-
 [profile.dev]
 debug = 1 # Speed up compilation time and not necessary.
