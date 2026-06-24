@@ -325,7 +325,7 @@ impl TensorMetadata for DispatchTensorKind {
             DispatchTensorKind::NdArray(tensor) => DispatchDevice::NdArray(tensor.device()),
             #[cfg(feature = "tch")]
             DispatchTensorKind::LibTorch(tensor) => DispatchDevice::LibTorch(tensor.device()),
-            #[cfg(feature = "remote")]
+            #[cfg(feature = "remote-iroh")]
             DispatchTensorKind::Remote(tensor) => DispatchDevice::Remote(tensor.device()),
             #[cfg(feature = "autodiff")]
             DispatchTensorKind::Autodiff(tensor) => DispatchDevice::autodiff(tensor.device()),
