@@ -223,10 +223,17 @@ pub(crate) fn kernel_binop<C: Numeric, N: Size, O: BinaryOpFamily>(
     );
 }
 
+/// Dawn rejects one buffer bound to two writable bindings, so `x op x` (same buffer as both inputs)
+/// must not alias. cubecl exposes no buffer id, so compare identity via the memory handle's `Debug`.
+fn shares_buffer<R: CubeRuntime>(a: &CubeTensor<R>, b: &CubeTensor<R>) -> bool {
+    format!("{:?}", a.handle.memory) == format!("{:?}", b.handle.memory)
+}
+
 pub(crate) fn launch_binop<R: CubeRuntime, O: BinaryOpFamily>(
     lhs: CubeTensor<R>,
     rhs: CubeTensor<R>,
 ) -> CubeTensor<R> {
+    let rhs = if shares_buffer(&lhs, &rhs) { rhs.copy() } else { rhs };
     let vector_size_lhs = max_vector_size(&lhs);
     let vector_size_rhs = max_vector_size(&rhs);
     let vector_size = Ord::min(vector_size_lhs, vector_size_rhs);
