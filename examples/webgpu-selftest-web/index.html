@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebGPU self-test</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background: #0e0e10; color: #ddd; margin: 0; padding: 16px; }
+        h1 { font-size: 18px; }
+        #results b { font-family: monospace; }
+        #console { margin-top: 16px; border-top: 1px solid #333; padding-top: 8px; font-family: monospace; font-size: 12px; color: #d88; white-space: pre-wrap; }
+    </style>
+</head>
+
+<body>
+    <h1>WebGPU self-test</h1>
+    <div id="results">loading…</div>
+    <div id="console"></div>
+
+    <script>
+        window.__diaglog = [];
+        (function () {
+            const push = (s) => { window.__diaglog.push(s); if (window.__diaglog.length > 100) window.__diaglog.shift(); };
+            const fmt = (a) => (a instanceof Error) ? (a.stack || a.message)
+                : (typeof a === "object" ? (() => { try { return JSON.stringify(a); } catch (e) { return String(a); } })() : String(a));
+            ["error", "warn"].forEach((lvl) => {
+                const orig = console[lvl].bind(console);
+                console[lvl] = (...a) => { try { push("[" + lvl + "] " + a.map(fmt).join(" ")); } catch (e) {} orig(...a); };
+            });
+            window.addEventListener("unhandledrejection", (e) => push("[reject] " + fmt(e.reason)));
+            setInterval(() => {
+                const el = document.getElementById("console");
+                if (el) el.textContent = window.__diaglog.join("\n");
+            }, 500);
+        })();
+    </script>
+
+    <script type="module">
+        const v = Date.now();
+        const mod = await import(`./pkg/webgpu_selftest_web.js?v=${v}`);
+        await mod.default(`./pkg/webgpu_selftest_web_bg.wasm?v=${v}`);
+        await mod.run();
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,25 @@
+[package]
+authors = ["Jonathan Richard"]
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+name = "webgpu-selftest-web"
+publish = false
+version.workspace = true
+description = "Isolated in-browser WebGPU self-test that reproduces the Dawn read_write binding-aliasing bug with plain tensor ops, no networking"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+burn = { workspace = true, features = ["wgpu", "flex"] }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
+console_error_panic_hook = { workspace = true }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "console"] }
+
+[package.metadata.wasm-pack.profile.dev]
+wasm-opt = false
