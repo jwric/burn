@@ -274,12 +274,19 @@ pub enum TelemetryEvent {
         graph: GraphId,
         ops: Vec<GraphOp>,
         bytes: usize,
+        /// blake3 over the rmp-serde encoding of the graph's relative op list: a stable content
+        /// address for the program, identical wherever the same graph is registered.
+        fingerprint: [u8; 32],
     },
     GraphExecuted {
         session: SessionId,
         graph: GraphId,
         stream: StreamId,
         bindings_bytes: usize,
+        /// Content fingerprint of the executed graph (see [`TelemetryEvent::GraphRegistered`]),
+        /// echoed so per-execution consumers need not have observed the registration. `None` when
+        /// the emitter no longer holds the graph body (client-side replay of a cached graph).
+        fingerprint: Option<[u8; 32]>,
     },
 }
 
@@ -312,12 +319,14 @@ impl TelemetryEvent {
         graph: GraphId,
         ops: &[OperationIr],
         bytes: usize,
+        fingerprint: [u8; 32],
     ) -> Self {
         TelemetryEvent::GraphRegistered {
             session,
             graph,
             ops: ops.iter().map(GraphOp::summarize).collect(),
             bytes,
+            fingerprint,
         }
     }
 
@@ -326,12 +335,14 @@ impl TelemetryEvent {
         graph: GraphId,
         stream: StreamId,
         bindings_bytes: usize,
+        fingerprint: Option<[u8; 32]>,
     ) -> Self {
         TelemetryEvent::GraphExecuted {
             session,
             graph,
             stream,
             bindings_bytes,
+            fingerprint,
         }
     }
 }
@@ -528,4 +539,15 @@ pub(crate) fn serialized_len<T: Serialize>(value: &T) -> usize {
     rmp_serde::to_vec(value)
         .map(|bytes| bytes.len())
         .unwrap_or(0)
+}
+
+/// Serialize `value` once, returning both the encoded length and the blake3 hash of the encoding.
+///
+/// Used to fingerprint a registered graph's relative op list: rmp-serde encoding of a fixed struct
+/// is deterministic, so identical programs fingerprint identically on every peer.
+pub(crate) fn serialized_len_and_fingerprint<T: Serialize>(value: &T) -> (usize, [u8; 32]) {
+    match rmp_serde::to_vec(value) {
+        Ok(bytes) => (bytes.len(), *blake3::hash(&bytes).as_bytes()),
+        Err(_) => (0, [0; 32]),
+    }
 }

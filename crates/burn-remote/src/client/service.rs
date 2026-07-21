@@ -3,7 +3,10 @@ use crate::shared::{
     LocalTransferId, PROTOCOL_VERSION, RemoteMessage, RequestId, SessionId, SessionInfo,
     SessionInit, Task, TaskResponse, TaskResponseContent, TensorRemote, TransferCapability,
 };
-use crate::telemetry::{CHANNEL_CAPACITY, TelemetryEvent, TelemetryProbe, serialized_len};
+use crate::telemetry::{
+    CHANNEL_CAPACITY, TelemetryEvent, TelemetryProbe, serialized_len,
+    serialized_len_and_fingerprint,
+};
 use burn_backend::{
     DTypeUsageSet, ExecutionError, TensorData,
     backend::{DeviceId, DeviceService, ServerUtilitiesHandle},
@@ -337,22 +340,29 @@ impl RemoteService {
         bindings: burn_ir::GraphBindings,
     ) {
         // The first invocation both registers (one-time graph cost) and executes (a replay).
-        self.probe.emit(|| {
-            TelemetryEvent::graph_registered(
-                self.session_id,
-                graph_id,
-                &relative_graph,
-                serialized_len(&relative_graph),
-            )
-        });
-        self.probe.emit(|| {
-            TelemetryEvent::graph_executed(
-                self.session_id,
-                graph_id,
-                stream_id,
-                serialized_len(&bindings),
-            )
-        });
+        // The fingerprint is shared by both events, so serialize/hash once, and only while a
+        // subscriber is actually listening (`emit` alone would guard each closure anyway).
+        if self.probe.is_active() {
+            let (graph_bytes, fingerprint) = serialized_len_and_fingerprint(&relative_graph);
+            self.probe.emit(|| {
+                TelemetryEvent::graph_registered(
+                    self.session_id,
+                    graph_id,
+                    &relative_graph,
+                    graph_bytes,
+                    fingerprint,
+                )
+            });
+            self.probe.emit(|| {
+                TelemetryEvent::graph_executed(
+                    self.session_id,
+                    graph_id,
+                    stream_id,
+                    serialized_len(&bindings),
+                    Some(fingerprint),
+                )
+            });
+        }
         self.submit_task(Task::RegisterAndExecuteGraph {
             stream_id,
             graph_id,
@@ -374,6 +384,9 @@ impl RemoteService {
                 graph_id,
                 stream_id,
                 serialized_len(&bindings),
+                // The client does not keep the graph body after registration, so a cached replay
+                // has no fingerprint to echo; the server-side event carries it.
+                None,
             )
         });
         self.submit_task(Task::ExecuteGraph {

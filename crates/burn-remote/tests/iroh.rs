@@ -184,10 +184,15 @@ async fn fused_compute_surfaces_as_graph_telemetry() {
             };
             aggregator.apply(&event);
             match event.as_ref() {
-                TelemetryEvent::GraphRegistered { ops, bytes, .. } => {
-                    saw_registered = !ops.is_empty() && *bytes > 0
+                TelemetryEvent::GraphRegistered {
+                    ops,
+                    bytes,
+                    fingerprint,
+                    ..
+                } => saw_registered = !ops.is_empty() && *bytes > 0 && *fingerprint != [0; 32],
+                TelemetryEvent::GraphExecuted { fingerprint, .. } => {
+                    saw_executed = fingerprint.is_some()
                 }
-                TelemetryEvent::GraphExecuted { .. } => saw_executed = true,
                 _ => {}
             }
         }

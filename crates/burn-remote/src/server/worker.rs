@@ -48,6 +48,7 @@ use crate::server::transfer::TensorTransfer;
 use crate::shared::{RequestId, SessionId, Task, TaskResponse, TaskResponseContent};
 use crate::telemetry::{
     TelemetryEvent, TelemetryProbe, TransferPhase, TransferScope, serialized_len,
+    serialized_len_and_fingerprint,
 };
 use burn_ir::OperationIr;
 
@@ -82,7 +83,10 @@ where
     /// *after* releasing it — the lock guards only the map, never the backend dispatch. That keeps
     /// the cache from becoming a serialization point if graph execution is ever driven from more
     /// than the current single-FIFO worker.
-    graphs: Mutex<HashMap<GraphId, Graph>>,
+    ///
+    /// Each entry also carries the blake3 content fingerprint computed once at registration, so
+    /// every replay can echo it in [`TelemetryEvent::GraphExecuted`].
+    graphs: Mutex<HashMap<GraphId, (Graph, [u8; 32])>>,
     probe: TelemetryProbe,
 }
 
@@ -203,18 +207,26 @@ where
                 relative_graph,
                 bindings,
             } => {
+                // Fingerprint the graph once, eagerly: replays must echo it even when the
+                // telemetry subscriber attaches after registration. Registration is a one-time
+                // cost per graph, so the extra serialization is off the replay hot path.
+                let (graph_bytes, fingerprint) = serialized_len_and_fingerprint(&relative_graph);
                 self.probe.emit(|| {
                     TelemetryEvent::graph_registered(
                         self.session_id,
                         graph_id,
                         &relative_graph,
-                        serialized_len(&relative_graph),
+                        graph_bytes,
+                        fingerprint,
                     )
                 });
-                self.emit_graph_executed(graph_id, stream_id, &bindings);
+                self.emit_graph_executed(graph_id, stream_id, &bindings, Some(fingerprint));
                 stream_id.executes(|| {
                     let graph = Graph::new(relative_graph);
-                    self.graphs.lock().unwrap().insert(graph_id, graph.clone());
+                    self.graphs
+                        .lock()
+                        .unwrap()
+                        .insert(graph_id, (graph.clone(), fingerprint));
                     graph.replay(&mut self.runner, bindings);
                 });
                 Ok(())
@@ -224,14 +236,14 @@ where
                 graph_id,
                 bindings,
             } => {
-                let graph = {
+                let (graph, fingerprint) = {
                     let cache = self.graphs.lock().unwrap();
                     cache
                         .get(&graph_id)
                         .cloned()
                         .ok_or_else(|| format!("Execute of unknown graph {graph_id:?}"))?
                 };
-                self.emit_graph_executed(graph_id, stream_id, &bindings);
+                self.emit_graph_executed(graph_id, stream_id, &bindings, Some(fingerprint));
                 stream_id.executes(|| graph.replay(&mut self.runner, bindings));
                 Ok(())
             }
@@ -449,9 +461,21 @@ where
         });
     }
 
-    fn emit_graph_executed(&self, graph: GraphId, stream: StreamId, bindings: &GraphBindings) {
+    fn emit_graph_executed(
+        &self,
+        graph: GraphId,
+        stream: StreamId,
+        bindings: &GraphBindings,
+        fingerprint: Option<[u8; 32]>,
+    ) {
         self.probe.emit(|| {
-            TelemetryEvent::graph_executed(self.session_id, graph, stream, serialized_len(bindings))
+            TelemetryEvent::graph_executed(
+                self.session_id,
+                graph,
+                stream,
+                serialized_len(bindings),
+                fingerprint,
+            )
         });
     }
 }

@@ -59,6 +59,9 @@ tokio = { workspace = true, features = ["sync", "io-util"] }
 serde = { workspace = true, features = ["derive"] }
 serde_bytes = { workspace = true }
 rmp-serde = { workspace = true }
+# Content fingerprint of registered op-graphs, surfaced through telemetry. `default-features =
+# false` keeps the pure-Rust build for wasm targets.
+blake3 = { version = "1", default-features = false }
 iroh = { workspace = true, optional = true }
 
 tokio-util = { workspace = true, optional = true }
