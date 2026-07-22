@@ -371,17 +371,21 @@ impl Device {
 
     /// Browser counterpart of [`remote_iroh`](Self::remote_iroh). Wasm cannot block to connect,
     /// so the session is established asynchronously before the device is returned.
+    ///
+    /// Returns `Err` if the peer is unreachable or the handshake fails, so a caller dialing a peer
+    /// that may have left can skip it instead of aborting — a browser panic can't be caught, so a
+    /// failed dial must be an error, not an unwind.
     #[cfg(all(feature = "remote", any(target_family = "wasm", doc)))]
     pub async fn remote_iroh_async(
         endpoint: &burn_dispatch::backends::remote::Endpoint,
         peer: impl Into<burn_dispatch::backends::remote::EndpointAddr>,
         index: impl Into<DeviceIndex>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let index = index.into().resolve();
         let device =
             burn_dispatch::backends::remote::RemoteDevice::iroh(endpoint, peer.into(), index);
-        device.connect_async().await;
-        Self::new(device)
+        device.connect_async().await?;
+        Ok(Self::new(device))
     }
 
     /// Like `remote_iroh`, but carries an authorization credential the server's PeerAuthorizer
@@ -405,13 +409,14 @@ impl Device {
     }
 
     /// Browser counterpart of `remote_iroh_authorized`. Establishes the session asynchronously.
+    /// Returns `Err` if the peer is unreachable or the handshake fails.
     #[cfg(all(feature = "remote", any(target_family = "wasm", doc)))]
     pub async fn remote_iroh_authorized_async(
         endpoint: &burn_dispatch::backends::remote::Endpoint,
         peer: impl Into<burn_dispatch::backends::remote::EndpointAddr>,
         index: impl Into<DeviceIndex>,
         credential: Vec<u8>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let index = index.into().resolve();
         let device = burn_dispatch::backends::remote::RemoteDevice::iroh_authorized(
             endpoint,
@@ -419,8 +424,8 @@ impl Device {
             index,
             credential,
         );
-        device.connect_async().await;
-        Self::new(device)
+        device.connect_async().await?;
+        Ok(Self::new(device))
     }
 
     /// WGPU device, selected via [`DeviceKind`].

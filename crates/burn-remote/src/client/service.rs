@@ -166,7 +166,7 @@ impl RemoteService {
         endpoint: &RemoteEndpoint,
         session_id: SessionId,
         device_index: u32,
-    ) -> (DeviceSettings, u32) {
+    ) -> Result<(DeviceSettings, u32), String> {
         let init_bytes: bytes::Bytes = rmp_serde::to_vec(&vec![RemoteMessage::Init(
             SessionInit::new(session_id, device_index, endpoint.authorization().to_vec()),
         )])
@@ -179,9 +179,9 @@ impl RemoteService {
             let msg = response
                 .recv()
                 .await?
-                .expect("Server disconnected during initialization");
-            let reply: TaskResponse =
-                rmp_serde::from_slice(&msg).expect("Can deserialize init handshake payload");
+                .ok_or_else(|| "server disconnected during initialization".to_string())?;
+            let reply: TaskResponse = rmp_serde::from_slice(&msg)
+                .map_err(|err| format!("deserialize init handshake payload: {err}"))?;
 
             match reply.content {
                 TaskResponseContent::Init(SessionInfo {
@@ -191,19 +191,19 @@ impl RemoteService {
                     ..
                 }) => {
                     if version != PROTOCOL_VERSION {
-                        panic!(
+                        return Err(format!(
                             "Server uses Burn Remote protocol version {version}, expected {PROTOCOL_VERSION}"
-                        );
+                        ));
                     }
                     Ok((settings, device_count))
                 }
-                other => panic!("Expected Init response, got {other:?}"),
+                other => Err(format!("Expected Init response, got {other:?}")),
             }
         }
         .await;
 
-        result.unwrap_or_else(|err| {
-            panic!(
+        result.map_err(|err| {
+            format!(
                 "Failed to initialize remote session at {}: {err}",
                 endpoint.peer_addr()
             )
@@ -220,13 +220,15 @@ impl RemoteService {
         session_id: SessionId,
         device_index: u32,
     ) -> (DeviceSettings, u32) {
-        executor.block_on(Self::handshake_async(
-            request,
-            response,
-            endpoint,
-            session_id,
-            device_index,
-        ))
+        executor
+            .block_on(Self::handshake_async(
+                request,
+                response,
+                endpoint,
+                session_id,
+                device_index,
+            ))
+            .unwrap_or_else(|err| panic!("{err}"))
     }
 
     /// Spawn the response-demux task: route each [`TaskResponse`] to its pending callback by
@@ -296,12 +298,10 @@ pub(crate) struct WasmConnected {
 /// response-demux and writer tasks with `spawn_local`. The returned [`WasmConnected`] is `Send`,
 /// so the caller can install it back into the service through the device handle.
 #[cfg(target_family = "wasm")]
-pub(crate) async fn wasm_connect(plan: WasmConnectPlan) -> WasmConnected {
+pub(crate) async fn wasm_connect(plan: WasmConnectPlan) -> Result<WasmConnected, String> {
     let executor = Executor::WasmLocal;
 
-    let (mut request, mut response) = open_channels(&plan.endpoint)
-        .await
-        .unwrap_or_else(|err| panic!("{err}"));
+    let (mut request, mut response) = open_channels(&plan.endpoint).await?;
     let (settings, device_count) = RemoteService::handshake_async(
         &mut request,
         &mut response,
@@ -309,16 +309,16 @@ pub(crate) async fn wasm_connect(plan: WasmConnectPlan) -> WasmConnected {
         plan.session_id,
         plan.device_index,
     )
-    .await;
+    .await?;
 
     RemoteService::spawn_response_demux(&executor, response, plan.responder);
     let writer = SubmitWriter::spawn(&executor, request);
 
-    WasmConnected {
+    Ok(WasmConnected {
         writer,
         settings,
         device_count,
-    }
+    })
 }
 
 impl RemoteService {

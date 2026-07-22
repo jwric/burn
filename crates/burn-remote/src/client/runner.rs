@@ -233,10 +233,11 @@ impl RemoteDevice {
     }
 
     /// Establish the session asynchronously. Browser entry point: wasm cannot block to connect,
-    /// so call and await this once before using the device. No-op if already connected.
+    /// so call and await this once before using the device. No-op if already connected. Returns
+    /// `Err` when the peer can't be reached or the handshake fails.
     #[cfg(target_family = "wasm")]
-    pub async fn connect_async(&self) {
-        get_client::<RemoteChannel>(self).connect_async().await;
+    pub async fn connect_async(&self) -> Result<(), String> {
+        get_client::<RemoteChannel>(self).connect_async().await
     }
 
     /// Initialize the client for this device using a custom protocol channel.

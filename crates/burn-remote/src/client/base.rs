@@ -37,9 +37,10 @@ impl RemoteClient {
     /// The connect + handshake cannot block the single browser thread, so it runs off the device
     /// handle: the service hands back the connection parameters, the network round-trip happens
     /// with `.await`, and the opened session is installed back into the service. A no-op once the
-    /// session is up.
+    /// session is up. Returns `Err` if the peer is unreachable or the handshake fails, so the
+    /// caller can skip a dead peer instead of aborting the whole (browser) process.
     #[cfg(target_family = "wasm")]
-    pub(crate) async fn connect_async(&self) {
+    pub(crate) async fn connect_async(&self) -> Result<(), String> {
         use crate::client::service::wasm_connect;
 
         let Some(plan) = self
@@ -47,14 +48,15 @@ impl RemoteClient {
             .submit_blocking(|s| s.wasm_connect_plan())
             .expect("Service call failed")
         else {
-            return;
+            return Ok(());
         };
 
-        let connected = wasm_connect(plan).await;
+        let connected = wasm_connect(plan).await?;
 
         self.handle
             .submit_blocking(move |s| s.wasm_install(connected))
             .expect("Service call failed");
+        Ok(())
     }
 }
 
