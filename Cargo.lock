@@ -1125,6 +1125,7 @@ dependencies = [
 name = "burn-remote"
 version = "0.22.0-pre.1"
 dependencies = [
+ "blake3",
  "burn-backend",
  "burn-communication",
  "burn-flex",
